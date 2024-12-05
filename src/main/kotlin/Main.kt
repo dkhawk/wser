@@ -8,18 +8,13 @@ import io.ktor.client.*
 import io.ktor.client.engine.cio.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
 
 data class Category(
     val tickets: Int,
     val entrants: Int,
     val total: Int,
 )
-
-// const val rounds = 270
-const val rounds = 10
-
-val categoryForEntrant = mutableMapOf<Int, Int>()
 
 suspend fun getDocument(url: String): Document {
     val localFilePath = "/Users/dkhawk/tmp/lottery2025.html"
@@ -42,20 +37,26 @@ suspend fun getDocument(url: String): Document {
 }
 
 fun main(args: Array<String>) = runBlocking {
-
     val doc = getDocument("https://www.wser.org/lottery2025.html")
 
     val categories = createCategories(doc)
 
-    println(categories)
-    runSimulations(categories = categories, numSimulations = 50000)
+    println(categories.joinToString("\n"))
+
+    launch(Dispatchers.Default) {
+        runSimulations(this, categories = categories, numSimulations = 100000)
+    }
 
     return@runBlocking
 }
 
-fun runSimulations(categories: List<Category>, numSimulations: Int) {
+suspend fun runSimulations(
+    scope: CoroutineScope,
+    categories: List<Category>,
+    numSimulations: Int,
+    spots: Int = 260
+) {
     val athletes = createAthleteList(categories)
-
     val athleteMap = athletes.toMap()
 
     val tickets = buildList {
@@ -64,29 +65,32 @@ fun runSimulations(categories: List<Category>, numSimulations: Int) {
         }
     }
 
-    val spots = 257
-    val results = generateSequence(0) { it + 1 }.take(numSimulations).fold(emptyMap<Int, Double>()) { acc, _ ->
-        val winners = mutableSetOf<Int>() // Keep track of winning tickets
+    val jobs = (0..numSimulations).map {
+        scope.async {
+            val winners = mutableSetOf<Int>() // Keep track of winning tickets
 
-        while (winners.size < spots) {
-            val winner = tickets.random()
-            if (!winners.contains(winner)) {
-                winners.add(winner)
+            while (winners.size < spots) {
+                val winner = tickets.random()
+                if (!winners.contains(winner)) {
+                    winners.add(winner)
+                }
             }
+
+            winners.map {
+                it to athleteMap[it]!!
+            }.groupingBy { it.second }.eachCount().map { (categoryTickets, numWinners) ->
+                val c = categories.first { it.tickets == categoryTickets }
+                val winRatio = (numWinners.toDouble() / c.entrants)
+                categoryTickets to winRatio
+            }.toMap()
         }
+    }
 
-        val y = winners.map {
-            it to athleteMap[it]!!
-        }.groupingBy { it.second }.eachCount().map { (categoryTickets, numWinners) ->
-            val c = categories.first { it.tickets == categoryTickets }
-            val winRatio = (numWinners.toDouble() / c.entrants)
-            categoryTickets to winRatio
-        }.toMap()
-
+    val results = jobs.awaitAll().fold(emptyMap<Int, Double>()) { acc, simResult ->
         categories.associate { cat ->
             val id = cat.tickets
-            val s = y.getOrDefault(id, 0.0) + acc.getOrDefault(id, 0.0)
-            id to s
+            val sum = simResult.getOrDefault(id, 0.0) + acc.getOrDefault(id, 0.0)
+            id to sum
         }
     }
 
@@ -99,20 +103,11 @@ fun runSimulations(categories: List<Category>, numSimulations: Int) {
 }
 
 private fun createAthleteList(categories: List<Category>): List<Pair<Int, Int>> {
-    var index = 0
-
-    val athletes = categories.flatMap { category ->
-        val l = buildList {
-            repeat(category.entrants) { it ->
-                add(index + it to category.tickets)
-            }
-        }
-
-        index += category.entrants
-        l
+    return categories.fold(emptyList()) { list, category ->
+        list + List(category.entrants) { list.size + it to category.tickets }
     }
-    return athletes
 }
+
 
 private fun createCategories(doc: Document): List<Category> {
     val path = "/html/body/div/table/tbody/tr[2]/td/table/tbody/tr[2]/td/table/tbody"
