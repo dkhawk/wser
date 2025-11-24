@@ -38,9 +38,11 @@ fun Double.toPercentString(digits: Int = 3): String {
 
 // --- Main Execution ---
 
+val year = 2026
+
 fun main() = runBlocking {
-    val url = "https://www.wser.org/lottery2025.html"
-    val localCachePath = Path(System.getProperty("user.home"), "tmp", "lottery2025.html")
+    val url = "https://www.wser.org/lottery$year.html"
+    val localCachePath = Path(System.getProperty("user.home"), "tmp", "lottery$year.html")
 
     println("Fetching data from $url with local cache at $localCachePath...")
 

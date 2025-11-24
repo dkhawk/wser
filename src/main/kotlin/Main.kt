@@ -12,7 +12,7 @@ import kotlinx.coroutines.*
 import java.util.*
 import kotlin.system.measureTimeMillis
 
-val year = 2025
+val year = 2026
 
 data class Category(
     val tickets: Int,
