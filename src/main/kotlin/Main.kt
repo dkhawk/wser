@@ -10,6 +10,9 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import kotlinx.coroutines.*
 import java.util.*
+import kotlin.system.measureTimeMillis
+
+val year = 2025
 
 data class Category(
     val tickets: Int,
@@ -18,7 +21,7 @@ data class Category(
 )
 
 suspend fun getDocument(url: String): Document {
-    val localFilePath = "/Users/dkhawk/tmp/lottery2025.html"
+    val localFilePath = "/Users/dkhawk/tmp/lottery$year.html"
     val client = HttpClient(CIO)
 
     val htmlContent = try {
@@ -37,18 +40,22 @@ suspend fun getDocument(url: String): Document {
     return Jsoup.parse(htmlContent)
 }
 
-fun main() = runBlocking {
-    val doc = getDocument("https://www.wser.org/lottery2026.html")
+fun main() {
+    val t = measureTimeMillis {
+        runBlocking {
+            val doc = getDocument("https://www.wser.org/lottery$year.html")
 
-    val categories = createCategories(doc)
+            val categories = createCategories(doc)
 
-    println(categories.joinToString("\n"))
+            println(categories.joinToString("\n"))
 
-    launch(Dispatchers.Default) {
-        runSimulations(this, categories = categories, numSimulations = 100000)
+            launch(Dispatchers.Default) {
+                runSimulations(this, categories = categories, numSimulations = 500000)
+            }
+        }
     }
 
-    return@runBlocking
+    println("Time: $t")
 }
 
 suspend fun runSimulations(
@@ -127,3 +134,17 @@ private fun createCategories(doc: Document): List<Category> {
 
 // Helper function to format a Double to a specified number of decimal places
 fun Double.format(digits: Int) = "%.${digits}f".format(this)
+
+/**
+ * 1: 0.308
+ * 2: 0.616
+ * 4: 1.226
+ * 8: 2.438
+ * 16: 4.820
+ * 32: 9.408
+ * 64: 17.925
+ * 128: 32.661
+ * 256: 54.660
+ * 512: 79.459
+ * Time: 3906
+ */

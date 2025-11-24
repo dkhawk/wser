@@ -1,5 +1,7 @@
 package com.sphericalchickens.gem
 
+import io.ktor.client.*
+import io.ktor.client.engine.cio.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import kotlinx.coroutines.CoroutineScope
@@ -11,6 +13,7 @@ import org.jsoup.nodes.Document
 import java.io.IOException
 import kotlin.io.path.Path
 import kotlin.random.Random
+import kotlin.system.measureTimeMillis
 
 // --- Domain Models ---
 
@@ -41,39 +44,46 @@ data class Athlete(
 /**
  * Helper function to format a Double as a percentage string with specified decimal places.
  */
-fun Double.toPercentString(digits: Int = 3) = "%.${digits}f".format(this * 100.0)
+fun Double.toPercentString(digits: Int = 3): String {
+    val percentage = this * 100.0
+    return "%.${digits}f".format(percentage)
+}
 
 // --- Main Execution ---
 
-fun main() = runBlocking {
-    val url = "https://www.wser.org/lottery2026.html"
-    val localCachePath = Path(System.getProperty("user.home"), "tmp", "lottery2026.html")
-    val numSimulations = 100_000
+fun main() {
+    val t = measureTimeMillis {
+        runBlocking {
+            val url = "https://www.wser.org/lottery2026.html"
+            // Use an OS-independent path construction
+            val localCachePath = Path(System.getProperty("user.home"), "tmp", "lottery2026.html")
+            val numSimulations = 500_000
 
-    println("Fetching data from $url with local cache at $localCachePath...")
+            println("Fetching data from $url with local cache at $localCachePath...")
 
-    // We use a safe-call with try-catch only on the networking/file-system boundary.
-    val doc = fetchDocument(url, localCachePath)
-    val categories = parseCategories(doc)
+            val doc = fetchDocument(url, localCachePath)
+            val categories = parseCategories(doc)
 
-    println("\n--- Category Data ---")
-    println("Tickets | Entrants | Total Tickets")
-    println(categories.joinToString("\n") {
-        "%7d | %8d | %13d".format(it.tickets, it.entrants, it.total)
-    })
+            println("\n--- Part 1: Category Data ---")
+            println("Tickets | Entrants | Total Tickets")
+            println(categories.joinToString("\n") {
+                "%7d | %8d | %13d".format(it.tickets, it.entrants, it.total)
+            })
 
-    println("\n--- Starting $numSimulations Simulations ---")
+            println("\n--- Part 2: Starting $numSimulations Simulations ---")
 
-    // The coroutine scope is implicitly provided by runBlocking, no need to pass it.
-    val results = runSimulations(this, categories, numSimulations)
+            val results = runSimulations(this, categories, numSimulations)
 
-    println("\n--- Simulation Results (Probability of Winning) ---")
-    results.toList()
-        .sortedBy { (tickets, _) -> tickets }
-        .joinToString(separator = "\n") { (tickets, probability) ->
-            "$tickets Tickets: ${probability.toPercentString()}%"
+            println("\n--- Simulation Results (Probability of Winning) ---")
+            results.toList()
+                .sortedBy { (tickets, _) -> tickets }
+                .joinToString(separator = "\n") { (tickets, probability) ->
+                    "$tickets Tickets: ${probability.toPercentString()}%"
+                }
+                .let(::println)
         }
-        .let(::println) // Use 'let' to pass the resulting string to println
+    }
+    println("Time: $t")
 }
 
 // --- Data Fetching and Parsing ---
@@ -84,20 +94,17 @@ fun main() = runBlocking {
 suspend fun fetchDocument(url: String, localFilePath: java.nio.file.Path): Document {
     val localFile = localFilePath.toFile()
 
-    // Use the functional approach to read text: try to read local file, if error, fetch from web.
+    // Use functional try-catch for reading local text
     val htmlContent = try {
-        localFile.readText() // More idiomatic Kotlin I/O
+        localFile.readText()
     } catch (e: IOException) {
         println("Local cache not found or error reading. Downloading from URL...")
-        // We defer the Ktor client initialization here to only happen on a cache miss.
-        val client = io.ktor.client.HttpClient(io.ktor.client.engine.cio.CIO)
 
-        // Use 'use' on the client to ensure resources are closed, even if an error occurs.
-        client.use {
-            val response = it.get(url)
+        // Use 'use' on the client for automatic resource closing
+        HttpClient(CIO).use { client ->
+            val response = client.get(url)
             val content = response.bodyAsText()
 
-            // Ensure the parent directory exists before writing
             localFile.parentFile?.mkdirs()
             localFile.writeText(content)
             content
@@ -109,20 +116,17 @@ suspend fun fetchDocument(url: String, localFilePath: java.nio.file.Path): Docum
 
 /**
  * Parses the document to extract the lottery category data.
- * The XPath is still fragile, but the structure is cleaner.
  */
 private fun parseCategories(doc: Document): List<Category> {
-    // Note: XPath is brittle. In a production app, we would look for more stable selectors (e.g., class/id).
     val path = "/html/body/div/table/tbody/tr[2]/td/table/tbody/tr[2]/td/table/tbody"
     val rows = doc.selectXpath(path).select("tr")
 
     return rows.drop(1).map { row ->
         val cells = row.select("td")
 
-        // Use functional filter and map for clarity. The filter still relies on the table structure.
         val (tickets, entrants, total) = cells
             .filterIndexed { index, _ -> index % 2 == 0 }
-            .map { it.text().replace(",", "").toIntOrNull() ?: 0 } // Use toIntOrNull for safer parsing
+            .map { it.text().replace(",", "").toIntOrNull() ?: 0 }
 
         Category(tickets, entrants, total)
     }
@@ -131,7 +135,7 @@ private fun parseCategories(doc: Document): List<Category> {
 // --- Simulation Logic ---
 
 /**
- * Runs the Monte Carlo simulation across multiple coroutines.
+ * Runs the Monte Carlo simulation across multiple coroutines using structural concurrency.
  * @return A map of (Tickets -> Average Probability of Winning).
  */
 suspend fun runSimulations(
@@ -142,24 +146,26 @@ suspend fun runSimulations(
 ): Map<Int, Double> {
     val athletes = createAthleteList(categories)
 
-    // Create the ticket pool as a list of athlete IDs. Immutable 'val' is preferred.
+    // Create the ticket pool as a list of athlete IDs.
     val ticketPool = athletes.flatMap { athlete ->
         List(athlete.categoryTickets) { athlete.id }
     }
 
+    // Map of Athlete ID to the number of tickets they hold (category ID)
     val athleteMap = athletes.associate { it.id to it.categoryTickets }
 
     // Parallel processing of simulations using 'async'
     val jobs = (1..numSimulations).map {
+        // async is available because runSimulations is a suspend function
         scope.async {
             runSingleSimulation(ticketPool, athleteMap, categories, spots)
         }
     }
 
-    // Await all results and combine them functionally.
+    // Await all results and combine them functionally using reduce.
     return jobs.awaitAll()
         .reduce { acc, simResult ->
-            // Use 'reduce' to combine the maps into a single map of sums.
+            // Combine maps by summing the ratios for each categoryTickets key.
             acc.mapValues { (categoryTickets, sum) ->
                 sum + simResult.getValue(categoryTickets)
             }
@@ -171,7 +177,21 @@ suspend fun runSimulations(
 }
 
 /**
- * Runs a single lottery simulation to determine the win ratios for each category.
+ * Creates the initial list of athletes with their category ticket counts.
+ */
+private fun createAthleteList(categories: List<Category>): List<Athlete> {
+    var currentId = 0
+    return categories.flatMap { category ->
+        List(category.entrants) {
+            Athlete(currentId++, category.tickets)
+        }
+    }
+}
+
+
+/**
+ * Runs a single lottery simulation, restoring the O(1) random access for performance.
+ * The core simulation logic should not perform an O(T) shuffle inside the loop.
  */
 private fun runSingleSimulation(
     ticketPool: List<Int>,
@@ -179,24 +199,19 @@ private fun runSingleSimulation(
     categories: List<Category>,
     spots: Int
 ): Map<Int, Double> {
-    // Using a Fisher-Yates shuffle approach on the ticket pool is much cleaner and more efficient
-    // than a 'while' loop with random selection and set checking, especially for a large spots value.
-    // 1. Shuffle the list of tickets.
-    val shuffledTickets = ticketPool.shuffled(Random)
 
-    // 2. Select the winners from the shuffled pool.
     val winners = mutableSetOf<Int>() // Set of unique winning athlete IDs
 
-    // Iterate through the shuffled tickets and stop once we have enough unique winners.
-    for (athleteId in shuffledTickets) {
-        winners.add(athleteId)
-        if (winners.size >= spots) break
+    // LOOP PERFORMANCE FIX: O(1) random access from the ticket pool
+    while (winners.size < spots) {
+        val winnerId = ticketPool.random(Random) // Use the List.random(Random) extension
+        winners.add(winnerId)
     }
 
     // Calculate the category win ratios for this single simulation.
     val categoryWinCounts = winners
-        // Group the unique winning athlete IDs by their ticket count (category identifier)
-        .groupingBy { athleteMap[it]!! }
+        // Group by the athlete's ticket count (category identifier)
+        .groupingBy { athleteMap.getValue(it) }
         .eachCount()
 
     return categories.associate { category ->
@@ -208,17 +223,32 @@ private fun runSingleSimulation(
 }
 
 /**
- * Creates the initial list of athletes with their category ticket counts.
+ * --- Part 1: Category Data ---
+ * Tickets | Entrants | Total Tickets
+ *     512 |        5 |          2560
+ *     256 |       47 |         12032
+ *     128 |      129 |         16512
+ *      64 |      242 |         15488
+ *      32 |      354 |         11328
+ *      16 |      675 |         10800
+ *       8 |     1114 |          8912
+ *       4 |     1772 |          7088
+ *       2 |     2621 |          5242
+ *       1 |     4531 |          4531
+ *
+ * --- Part 2: Starting 100000 Simulations ---
+ *
+ * --- Simulation Results (Probability of Winning) ---
+ *
+ * 1 Tickets: 0.308%
+ * 2 Tickets: 0.615%
+ * 4 Tickets: 1.227%
+ * 8 Tickets: 2.439%
+ * 16 Tickets: 4.818%
+ * 32 Tickets: 9.410%
+ * 64 Tickets: 17.928%
+ * 128 Tickets: 32.652%
+ * 256 Tickets: 54.633%
+ * 512 Tickets: 79.446%
+ * Time: 14815
  */
-private fun createAthleteList(categories: List<Category>): List<Athlete> {
-    // Use flatMap to create a single list of Athlete objects in a functional way.
-    // The index is implicitly handled by 'runningReduce' or manually, here we use a mutable counter
-    // for simplicity and local scope control, which is acceptable in a private utility function.
-    var currentId = 0
-    return categories.flatMap { category ->
-        List(category.entrants) {
-            // Post-increment is used to assign the ID and then prepare for the next athlete.
-            Athlete(currentId++, category.tickets)
-        }
-    }
-}
