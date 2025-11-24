@@ -9,6 +9,7 @@ import io.ktor.client.engine.cio.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import kotlinx.coroutines.*
+import java.util.*
 
 data class Category(
     val tickets: Int,
@@ -36,8 +37,8 @@ suspend fun getDocument(url: String): Document {
     return Jsoup.parse(htmlContent)
 }
 
-fun main(args: Array<String>) = runBlocking {
-    val doc = getDocument("https://www.wser.org/lottery2025.html")
+fun main() = runBlocking {
+    val doc = getDocument("https://www.wser.org/lottery2026.html")
 
     val categories = createCategories(doc)
 
@@ -123,3 +124,6 @@ private fun createCategories(doc: Document): List<Category> {
         Category(tickets, entrants, total)
     }
 }
+
+// Helper function to format a Double to a specified number of decimal places
+fun Double.format(digits: Int) = "%.${digits}f".format(this)
