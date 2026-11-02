@@ -34,12 +34,22 @@ const val YEAR = 2027
 const val DEFAULT_LOTTERY_SPOTS = 260
 
 /**
- * Standard lower-bound waitlist size (50 runners).
+ * First 10 waitlist spots (`1..10`).
+ */
+const val WAITLIST_SIZE_10 = 10
+
+/**
+ * First 25 waitlist spots (`1..25`).
+ */
+const val WAITLIST_SIZE_25 = 25
+
+/**
+ * Standard lower-bound waitlist size (50 runners, `1..50`).
  */
 const val WAITLIST_SIZE_50 = 50
 
 /**
- * Standard upper-bound waitlist size (75 runners).
+ * Standard upper-bound waitlist size (75 runners, `1..75`).
  */
 const val WAITLIST_SIZE_75 = 75
 
@@ -96,16 +106,20 @@ data class WaitlistBucket(
 
 /**
  * Complete probability distribution across the main lottery, 10-runner waitlist buckets,
- * and aggregate 50-runner / 75-runner waitlists for each ticket category.
+ * and cumulative waitlist thresholds (`1..10`, `1..25`, `1..50`, `1..75`) for each ticket category.
  *
  * @property mainLottery Map of (`tickets -> probability of winning one of the main lottery spots`).
  * @property waitlistByBucket Map of (`WaitlistBucket -> (tickets -> probability of landing in that bucket)`).
+ * @property waitlistTop10 Map of (`tickets -> probability of landing in waitlist positions 1..10`).
+ * @property waitlistTop25 Map of (`tickets -> probability of landing in waitlist positions 1..25`).
  * @property waitlistTop50 Map of (`tickets -> probability of landing in waitlist positions 1..50`).
  * @property waitlistTop75 Map of (`tickets -> probability of landing in waitlist positions 1..75`).
  */
 data class LotteryOutcomeProbabilities(
     val mainLottery: Map<Int, Double>,
     val waitlistByBucket: Map<WaitlistBucket, Map<Int, Double>>,
+    val waitlistTop10: Map<Int, Double>,
+    val waitlistTop25: Map<Int, Double>,
     val waitlistTop50: Map<Int, Double>,
     val waitlistTop75: Map<Int, Double>,
 )
@@ -153,7 +167,11 @@ fun main(args: Array<String>) {
                 }
             }
 
-            println("=== Part 2: Monte Carlo Simulation ($DEFAULT_NUM_SIMULATIONS runs) ===")
+            println("=== Part 2A: Monte Carlo Cumulative Waitlist Table ($DEFAULT_NUM_SIMULATIONS runs) ===")
+            printCumulativeWaitlistTable(categories, simulatedOutcomes)
+            println()
+
+            println("=== Part 2B: Monte Carlo 10-Runner Waitlist Buckets ($DEFAULT_NUM_SIMULATIONS runs) ===")
             printOutcomeTable(categories, simulatedOutcomes)
             println("Simulation Time: $simDuration\n")
 
@@ -209,6 +227,44 @@ fun main(args: Array<String>) {
     }
 
     println("Total Execution Time:    $totalDuration")
+}
+
+/**
+ * Prints a focused table for the Main Lottery (`1..260`), Waitlist First 10 (`1..10`),
+ * Waitlist Up to 25th (`1..25`), and Waitlist Up to 50th (`1..50`).
+ */
+private fun printCumulativeWaitlistTable(
+    categories: List<Category>,
+    outcomes: LotteryOutcomeProbabilities,
+) {
+    val header = "%7s | %8s | %12s | %16s | %16s | %16s".format(
+        "Tickets",
+        "Entrants",
+        "Lottery",
+        "WL First 10",
+        "WL Up to 25th",
+        "WL Up to 50th",
+    )
+    println(header)
+    println("-".repeat(header.length))
+
+    for (category in categories.sortedBy { it.tickets }) {
+        val t = category.tickets
+        val lotteryPct = (outcomes.mainLottery.getValue(t) * 100.0).format(3) + "%"
+        val wl10Pct = (outcomes.waitlistTop10.getValue(t) * 100.0).format(3) + "%"
+        val wl25Pct = (outcomes.waitlistTop25.getValue(t) * 100.0).format(3) + "%"
+        val wl50Pct = (outcomes.waitlistTop50.getValue(t) * 100.0).format(3) + "%"
+        println(
+            "%7d | %8d | %12s | %16s | %16s | %16s".format(
+                t,
+                category.entrants,
+                lotteryPct,
+                wl10Pct,
+                wl25Pct,
+                wl50Pct,
+            )
+        )
+    }
 }
 
 /**
@@ -381,6 +437,8 @@ suspend fun runLotteryAndWaitlistSimulations(
         return LotteryOutcomeProbabilities(
             mainLottery = zeroMap,
             waitlistByBucket = waitlistBuckets.associateWith { zeroMap },
+            waitlistTop10 = zeroMap,
+            waitlistTop25 = zeroMap,
             waitlistTop50 = zeroMap,
             waitlistTop75 = zeroMap,
         )
@@ -488,12 +546,16 @@ suspend fun runLotteryAndWaitlistSimulations(
             endDrawExclusive = spots + bucket.endRank,
         )
     }
+    val waitlist10Probs = probabilitiesForDrawRange(spots, spots + WAITLIST_SIZE_10)
+    val waitlist25Probs = probabilitiesForDrawRange(spots, spots + WAITLIST_SIZE_25)
     val waitlist50Probs = probabilitiesForDrawRange(spots, spots + WAITLIST_SIZE_50)
     val waitlist75Probs = probabilitiesForDrawRange(spots, spots + WAITLIST_SIZE_75)
 
     return LotteryOutcomeProbabilities(
         mainLottery = mainLotteryProbs,
         waitlistByBucket = bucketProbs,
+        waitlistTop10 = waitlist10Probs,
+        waitlistTop25 = waitlist25Probs,
         waitlistTop50 = waitlist50Probs,
         waitlistTop75 = waitlist75Probs,
     )

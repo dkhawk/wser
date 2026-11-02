@@ -4,6 +4,8 @@ import com.sphericalchickens.Category
 import com.sphericalchickens.DEFAULT_LOTTERY_SPOTS
 import com.sphericalchickens.DEFAULT_WAITLIST_BUCKETS
 import com.sphericalchickens.LotteryOutcomeProbabilities
+import com.sphericalchickens.WAITLIST_SIZE_10
+import com.sphericalchickens.WAITLIST_SIZE_25
 import com.sphericalchickens.WAITLIST_SIZE_50
 import com.sphericalchickens.WAITLIST_SIZE_75
 import com.sphericalchickens.WaitlistBucket
@@ -93,6 +95,8 @@ fun calculateExactLotteryAndWaitlistProbabilities(
         return LotteryOutcomeProbabilities(
             mainLottery = zeroMap,
             waitlistByBucket = waitlistBuckets.associateWith { zeroMap },
+            waitlistTop10 = zeroMap,
+            waitlistTop25 = zeroMap,
             waitlistTop50 = zeroMap,
             waitlistTop75 = zeroMap,
         )
@@ -122,12 +126,16 @@ fun calculateExactLotteryAndWaitlistProbabilities(
             endDrawInclusive = spots + bucket.endRank,
         )
     }
+    val waitlist10 = intervalProbability(spots, spots + WAITLIST_SIZE_10)
+    val waitlist25 = intervalProbability(spots, spots + WAITLIST_SIZE_25)
     val waitlist50 = intervalProbability(spots, spots + WAITLIST_SIZE_50)
     val waitlist75 = intervalProbability(spots, spots + WAITLIST_SIZE_75)
 
     return LotteryOutcomeProbabilities(
         mainLottery = mainLottery,
         waitlistByBucket = bucketProbabilities,
+        waitlistTop10 = waitlist10,
+        waitlistTop25 = waitlist25,
         waitlistTop50 = waitlist50,
         waitlistTop75 = waitlist75,
     )
