@@ -56,7 +56,7 @@ const val WAITLIST_SIZE_75 = 75
 /**
  * Default number of Monte Carlo trials to run for probability estimation.
  */
-const val DEFAULT_NUM_SIMULATIONS = 500_000
+const val DEFAULT_NUM_SIMULATIONS = 1_000_000
 
 /**
  * Default waitlist buckets grouped by tens up to 75 runners (`1-10`, `11-20`, ..., `71-75`).
