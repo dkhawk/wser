@@ -9,12 +9,10 @@ import com.sphericalchickens.WAITLIST_SIZE_25
 import com.sphericalchickens.WAITLIST_SIZE_50
 import com.sphericalchickens.WAITLIST_SIZE_75
 import com.sphericalchickens.WaitlistBucket
-import com.sphericalchickens.YEAR
-import com.sphericalchickens.createCategories
 import com.sphericalchickens.gem.toPercentString
-import com.sphericalchickens.getDocument
+import com.sphericalchickens.loadCategories
+import com.sphericalchickens.parseCliArgs
 import kotlinx.coroutines.runBlocking
-import kotlin.io.path.Path
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.max
@@ -23,20 +21,13 @@ import kotlin.math.sqrt
 /**
  * Entry point for the analytical (non-simulated) WSER lottery probability solver.
  *
- * Pass `--force-download` in [args] to bypass the local HTML cache and re-download
- * the latest entrant data from `wser.org`.
+ * Supports all CLI options parsed by [parseCliArgs] (`--year`, `--force-download`, `--file`, `--categories`).
  */
 fun main(args: Array<String>) = runBlocking {
-    val forceDownload = "--force-download" in args
-    val url = "https://www.wser.org/lottery$YEAR.html"
-    val localCachePath = Path(System.getProperty("user.home"), "tmp", "lottery$YEAR.html")
+    val options = parseCliArgs(args)
+    val categories = loadCategories(options)
 
-    println("Fetching data from $url with local cache at $localCachePath...")
-
-    val doc = getDocument(url, localCachePath, forceDownload = forceDownload)
-    val categories = createCategories(doc)
-
-    println("\n--- Part 1: Category Data ---")
+    println("\n--- Part 1: Category Data (${options.sourceLabel}) ---")
     println("Tickets | Entrants | Total Tickets")
     println(
         categories.joinToString("\n") {

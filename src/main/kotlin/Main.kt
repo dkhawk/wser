@@ -5,6 +5,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.isSuccess
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -13,20 +14,23 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import java.io.IOException
 import java.nio.file.Path
+import java.time.Year
 import java.util.concurrent.ThreadLocalRandom
 import kotlin.io.path.Path
 import kotlin.io.path.exists
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.math.abs
+import kotlin.system.exitProcess
 import kotlin.time.measureTimedValue
 
 /**
- * The target Western States Endurance Run (WSER) lottery year.
+ * The default Western States Endurance Run (WSER) lottery year, defaulting to the current calendar year.
  */
-const val YEAR = 2027
+val YEAR: Int = Year.now().value
 
 /**
  * Default number of lottery winners drawn each year in the WSER lottery.
@@ -85,7 +89,7 @@ val DEFAULT_WAITLIST_BUCKETS: List<WaitlistBucket> = listOf(
 data class Category(
     val tickets: Int,
     val entrants: Int,
-    val total: Int,
+    val total: Int = tickets * entrants,
 )
 
 /**
@@ -125,108 +129,482 @@ data class LotteryOutcomeProbabilities(
 )
 
 /**
+ * Parsed command-line configuration for the WSER Lottery & Waitlist calculator.
+ *
+ * @property year Target lottery year (defaults to the current calendar year [YEAR]).
+ * @property forceDownload Whether to bypass the local HTML cache and fetch fresh data from `wser.org`.
+ * @property inputFile Optional path to a local CSV/TSV/whitespace text file or HTML file containing ticket counts.
+ * @property categoriesSpec Optional inline category string (e.g. `"1024:1,512:7,256:46"`).
+ * @property numSimulations Number of Monte Carlo trials to run.
+ * @property showHelp Whether `--help` / `-h` was requested.
+ */
+data class CliOptions(
+    val year: Int = YEAR,
+    val forceDownload: Boolean = false,
+    val inputFile: Path? = null,
+    val categoriesSpec: String? = null,
+    val numSimulations: Int = DEFAULT_NUM_SIMULATIONS,
+    val showHelp: Boolean = false,
+) {
+    /**
+     * Human-readable label describing the data source being analyzed.
+     */
+    val sourceLabel: String
+        get() = when {
+            categoriesSpec != null -> "Inline CLI Categories"
+            inputFile != null -> "File ($inputFile)"
+            else -> "$year WSER Lottery"
+        }
+}
+
+/**
+ * Exception thrown when WSER lottery ticket count data cannot be fetched or parsed.
+ *
+ * Carries an actionable diagnostic message explaining why the table could not be loaded
+ * and how the user can either target a different year or supply data via `--file` or `--categories`.
+ */
+class LotteryDataException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
+
+/**
+ * Parses command-line arguments into a validated [CliOptions] instance.
+ *
+ * Supported arguments:
+ * - `<year>` or `--year <year>` / `--year=<year>` / `-y <year>`: Target WSER lottery year (default: current year).
+ * - `--force-download` / `-f`: Re-download the HTML page from `wser.org` even if cached locally.
+ * - `--file <path>` / `--file=<path>` / `--input <path>`: Load ticket counts from a local CSV/TSV/text or HTML file.
+ * - `--categories <spec>` / `--categories=<spec>`: Supply inline `tickets:entrants` pairs (e.g. `"1024:1,512:7,..."`).
+ * - `--trials <n>` / `--trials=<n>` / `--simulations <n>`: Number of Monte Carlo simulation runs.
+ * - `--help` / `-h`: Print CLI usage instructions.
+ *
+ * @throws IllegalArgumentException If an unrecognized flag or invalid numeric argument is provided.
+ */
+fun parseCliArgs(args: Array<String>, defaultYear: Int = YEAR): CliOptions {
+    var year = defaultYear
+    var forceDownload = false
+    var inputFile: Path? = null
+    var categoriesSpec: String? = null
+    var numSimulations = DEFAULT_NUM_SIMULATIONS
+    var showHelp = false
+
+    var i = 0
+    while (i < args.size) {
+        val arg = args[i].trim()
+        when {
+            arg.isEmpty() -> Unit
+            arg == "--help" || arg == "-h" -> showHelp = true
+            arg == "--force-download" || arg == "-f" -> forceDownload = true
+
+            arg == "--year" || arg == "-y" -> {
+                val next = args.getOrNull(++i)
+                    ?: throw IllegalArgumentException("Missing year value after '$arg'. Example: --year 2027")
+                year = parseYearValue(next)
+            }
+            arg.startsWith("--year=") -> {
+                year = parseYearValue(arg.substringAfter("--year="))
+            }
+
+            arg == "--file" || arg == "--input" -> {
+                val next = args.getOrNull(++i)
+                    ?: throw IllegalArgumentException("Missing file path after '$arg'. Example: --file counts.csv")
+                inputFile = Path(next)
+            }
+            arg.startsWith("--file=") -> inputFile = Path(arg.substringAfter("--file="))
+            arg.startsWith("--input=") -> inputFile = Path(arg.substringAfter("--input="))
+
+            arg == "--categories" || arg == "--data" -> {
+                val next = args.getOrNull(++i)
+                    ?: throw IllegalArgumentException(
+                        "Missing category specification after '$arg'. Example: --categories 1024:1,512:7,256:46"
+                    )
+                categoriesSpec = next
+            }
+            arg.startsWith("--categories=") -> categoriesSpec = arg.substringAfter("--categories=")
+            arg.startsWith("--data=") -> categoriesSpec = arg.substringAfter("--data=")
+
+            arg == "--trials" || arg == "--simulations" -> {
+                val next = args.getOrNull(++i)
+                    ?: throw IllegalArgumentException("Missing integer value after '$arg'. Example: --trials 1000000")
+                numSimulations = parsePositiveInt(next, "simulation trials")
+            }
+            arg.startsWith("--trials=") -> {
+                numSimulations = parsePositiveInt(arg.substringAfter("--trials="), "simulation trials")
+            }
+            arg.startsWith("--simulations=") -> {
+                numSimulations = parsePositiveInt(arg.substringAfter("--simulations="), "simulation trials")
+            }
+
+            // Allow a bare 4-digit year as a convenient positional argument (e.g., `./gradlew run --args="2027"`)
+            arg.matches(Regex("""^\d{4}$""")) -> {
+                year = parseYearValue(arg)
+            }
+
+            else -> {
+                throw IllegalArgumentException(
+                    "Unrecognized argument: '$arg'. Run with --help to see supported options."
+                )
+            }
+        }
+        i++
+    }
+
+    return CliOptions(
+        year = year,
+        forceDownload = forceDownload,
+        inputFile = inputFile,
+        categoriesSpec = categoriesSpec,
+        numSimulations = numSimulations,
+        showHelp = showHelp,
+    )
+}
+
+private fun parseYearValue(raw: String): Int {
+    val parsed = raw.trim().toIntOrNull()
+    require(parsed != null && parsed in 1974..2100) {
+        "Invalid lottery year '$raw'. Expected a 4-digit year between 1974 and 2100 (e.g., 2027)."
+    }
+    return parsed
+}
+
+private fun parsePositiveInt(raw: String, name: String): Int {
+    val parsed = raw.replace(",", "").replace("_", "").trim().toIntOrNull()
+    require(parsed != null && parsed > 0) {
+        "Invalid $name value '$raw'. Expected a positive integer."
+    }
+    return parsed
+}
+
+/**
+ * Returns formatted CLI usage text describing how to target different years or provide custom data.
+ */
+fun cliUsageText(): String = """
+    Usage: ./gradlew run [--args="<options>"]
+
+    Options:
+      <year>, -y, --year <year>         Target WSER lottery year (default: current year, $YEAR).
+                                        Example: ./gradlew run --args="2027"
+      -f, --force-download              Bypass local cache (~/tmp/lottery<year>.html) and re-download from wser.org.
+      --file, --input <path>            Load ticket counts from a local CSV/TSV/whitespace file or HTML file.
+                                        Format per line: <tickets>,<entrants>[,<total>]
+      --categories <spec>               Pass ticket counts inline on the command line as comma-separated pairs.
+                                        Example: --categories "1024:1,512:7,256:46,128:94,64:175,32:342,16:511,8:778,4:998,2:1435,1:1717"
+      --trials, --simulations <count>   Number of Monte Carlo trials to run (default: $DEFAULT_NUM_SIMULATIONS).
+      -h, --help                        Show this help message and exit.
+""".trimIndent()
+
+/**
  * Entry point for the WSER Lottery & Waitlist probability calculator.
  *
  * Measures and reports execution time for each distinct stage:
- * 1. **Data Loading & HTML Parsing** ([getDocument] and [createCategories])
+ * 1. **Data Loading & Parsing** ([loadCategories])
  * 2. **Parallel Monte Carlo Simulation** ([runLotteryAndWaitlistSimulations])
  * 3. **Analytical Formula Solution** ([calculateExactLotteryAndWaitlistProbabilities])
  *
- * Pass `--force-download` in [args] to bypass the local HTML cache and re-download
- * the latest entrant data from `wser.org`.
- *
- * @param args Command-line arguments; supports `--force-download`.
+ * @param args Command-line arguments parsed by [parseCliArgs].
  */
 fun main(args: Array<String>) {
-    val forceDownload = "--force-download" in args
-    val (_, totalDuration) = measureTimedValue {
-        runBlocking {
-            val url = "https://www.wser.org/lottery$YEAR.html"
-            val cachePath = Path(System.getProperty("user.home"), "tmp", "lottery$YEAR.html")
+    val options = try {
+        parseCliArgs(args)
+    } catch (e: IllegalArgumentException) {
+        System.err.println("Error: ${e.message}\n")
+        System.err.println(cliUsageText())
+        exitProcess(2)
+    }
 
-            // --- Phase 1: Load and parse WSER lottery data ---
-            val (categories, loadDuration) = measureTimedValue {
-                val doc = getDocument(url, cachePath, forceDownload = forceDownload)
-                createCategories(doc)
-            }
+    if (options.showHelp) {
+        println(cliUsageText())
+        return
+    }
 
-            println("=== Part 1: Category Data ($YEAR WSER Lottery) ===")
-            println(categories.joinToString("\n"))
-            println("Data Load & Parse Time: $loadDuration\n")
+    try {
+        val (_, totalDuration) = measureTimedValue {
+            runBlocking {
+                // --- Phase 1: Load and parse WSER lottery data ---
+                val (categories, loadDuration) = measureTimedValue {
+                    loadCategories(options)
+                }
 
-            // --- Phase 2: Parallel Monte Carlo Simulation (Main Lottery + Waitlist) ---
-            val (simulatedOutcomes, simDuration) = measureTimedValue {
-                withContext(Dispatchers.Default) {
-                    runLotteryAndWaitlistSimulations(
-                        scope = this,
+                println("=== Part 1: Category Data (${options.sourceLabel}) ===")
+                println(categories.joinToString("\n"))
+                println("Data Load & Parse Time: $loadDuration\n")
+
+                // --- Phase 2: Parallel Monte Carlo Simulation (Main Lottery + Waitlist) ---
+                val (simulatedOutcomes, simDuration) = measureTimedValue {
+                    withContext(Dispatchers.Default) {
+                        runLotteryAndWaitlistSimulations(
+                            scope = this,
+                            categories = categories,
+                            numSimulations = options.numSimulations,
+                            spots = DEFAULT_LOTTERY_SPOTS,
+                            waitlistBuckets = DEFAULT_WAITLIST_BUCKETS,
+                        )
+                    }
+                }
+
+                println("=== Part 2A: Monte Carlo Cumulative Waitlist Table (${options.numSimulations} runs) ===")
+                printCumulativeWaitlistTable(categories, simulatedOutcomes)
+                println()
+
+                println("=== Part 2B: Monte Carlo 10-Runner Waitlist Buckets (${options.numSimulations} runs) ===")
+                printOutcomeTable(categories, simulatedOutcomes)
+                println("Simulation Time: $simDuration\n")
+
+                // --- Phase 3: Analytical Formula Solution (Main Lottery + Waitlist) ---
+                val (formulaOutcomes, formulaDuration) = measureTimedValue {
+                    calculateExactLotteryAndWaitlistProbabilities(
                         categories = categories,
-                        numSimulations = DEFAULT_NUM_SIMULATIONS,
                         spots = DEFAULT_LOTTERY_SPOTS,
                         waitlistBuckets = DEFAULT_WAITLIST_BUCKETS,
                     )
                 }
-            }
 
-            println("=== Part 2A: Monte Carlo Cumulative Waitlist Table ($DEFAULT_NUM_SIMULATIONS runs) ===")
-            printCumulativeWaitlistTable(categories, simulatedOutcomes)
-            println()
+                println("=== Part 3: Formula (Analytical) Solution ===")
+                printOutcomeTable(categories, formulaOutcomes)
+                println("Formula Calculation Time: $formulaDuration\n")
 
-            println("=== Part 2B: Monte Carlo 10-Runner Waitlist Buckets ($DEFAULT_NUM_SIMULATIONS runs) ===")
-            printOutcomeTable(categories, simulatedOutcomes)
-            println("Simulation Time: $simDuration\n")
-
-            // --- Phase 3: Analytical Formula Solution (Main Lottery + Waitlist) ---
-            val (formulaOutcomes, formulaDuration) = measureTimedValue {
-                calculateExactLotteryAndWaitlistProbabilities(
-                    categories = categories,
-                    spots = DEFAULT_LOTTERY_SPOTS,
-                    waitlistBuckets = DEFAULT_WAITLIST_BUCKETS,
-                )
-            }
-
-            println("=== Part 3: Formula (Analytical) Solution ===")
-            printOutcomeTable(categories, formulaOutcomes)
-            println("Formula Calculation Time: $formulaDuration\n")
-
-            // --- Summary Comparison ---
-            println("=== Summary Comparison (Main Lottery & Waitlist Totals) ===")
-            println(
-                "%-7s | %-18s | %-18s | %-18s".format(
-                    "Tickets",
-                    "Main (MC / Form)",
-                    "WL 1-50 (MC / Form)",
-                    "WL 1-75 (MC / Form)",
-                )
-            )
-            println("-".repeat(70))
-            for (category in categories.sortedBy { it.tickets }) {
-                val t = category.tickets
-                val mainMc = (simulatedOutcomes.mainLottery.getValue(t) * 100.0).format(3)
-                val mainFm = (formulaOutcomes.mainLottery.getValue(t) * 100.0).format(3)
-                val wl50Mc = (simulatedOutcomes.waitlistTop50.getValue(t) * 100.0).format(3)
-                val wl50Fm = (formulaOutcomes.waitlistTop50.getValue(t) * 100.0).format(3)
-                val wl75Mc = (simulatedOutcomes.waitlistTop75.getValue(t) * 100.0).format(3)
-                val wl75Fm = (formulaOutcomes.waitlistTop75.getValue(t) * 100.0).format(3)
+                // --- Summary Comparison ---
+                println("=== Summary Comparison (Main Lottery & Waitlist Totals) ===")
                 println(
-                    "%7d | %7s%% / %7s%% | %7s%% / %7s%% | %7s%% / %7s%%".format(
-                        t,
-                        mainMc,
-                        mainFm,
-                        wl50Mc,
-                        wl50Fm,
-                        wl75Mc,
-                        wl75Fm,
+                    "%-7s | %-18s | %-18s | %-18s".format(
+                        "Tickets",
+                        "Main (MC / Form)",
+                        "WL 1-50 (MC / Form)",
+                        "WL 1-75 (MC / Form)",
                     )
                 )
+                println("-".repeat(70))
+                for (category in categories.sortedBy { it.tickets }) {
+                    val t = category.tickets
+                    val mainMc = (simulatedOutcomes.mainLottery.getValue(t) * 100.0).format(3)
+                    val mainFm = (formulaOutcomes.mainLottery.getValue(t) * 100.0).format(3)
+                    val wl50Mc = (simulatedOutcomes.waitlistTop50.getValue(t) * 100.0).format(3)
+                    val wl50Fm = (formulaOutcomes.waitlistTop50.getValue(t) * 100.0).format(3)
+                    val wl75Mc = (simulatedOutcomes.waitlistTop75.getValue(t) * 100.0).format(3)
+                    val wl75Fm = (formulaOutcomes.waitlistTop75.getValue(t) * 100.0).format(3)
+                    println(
+                        "%7d | %7s%% / %7s%% | %7s%% / %7s%% | %7s%% / %7s%%".format(
+                            t,
+                            mainMc,
+                            mainFm,
+                            wl50Mc,
+                            wl50Fm,
+                            wl75Mc,
+                            wl75Fm,
+                        )
+                    )
+                }
+                println("-".repeat(70))
+                println("Data Load Time:          $loadDuration")
+                println("Monte Carlo Time:        $simDuration")
+                println("Formula Solution Time:   $formulaDuration")
             }
-            println("-".repeat(70))
-            println("Data Load Time:          $loadDuration")
-            println("Monte Carlo Time:        $simDuration")
-            println("Formula Solution Time:   $formulaDuration")
         }
+
+        println("Total Execution Time:    $totalDuration")
+    } catch (e: LotteryDataException) {
+        System.err.println("\nERROR: ${e.message}")
+        exitProcess(1)
+    }
+}
+
+/**
+ * Loads WSER ticket count categories according to [options]:
+ * 1. From an inline `--categories` CLI specification if provided,
+ * 2. From a local `--file` / `--input` path (CSV/TSV/whitespace text or HTML) if provided, or
+ * 3. From `https://www.wser.org/lottery<year>.html` (using the local cache at `~/tmp/lottery<year>.html`).
+ *
+ * @throws LotteryDataException With a clear explanation and fallback instructions if the data
+ *   cannot be retrieved or if no valid ticket counts table is found.
+ */
+suspend fun loadCategories(options: CliOptions): List<Category> {
+    options.categoriesSpec?.let { spec ->
+        return parseCategoriesSpec(spec)
     }
 
-    println("Total Execution Time:    $totalDuration")
+    options.inputFile?.let { filePath ->
+        return loadCategoriesFromFile(filePath)
+    }
+
+    val year = options.year
+    val url = "https://www.wser.org/lottery$year.html"
+    val cachePath = Path(System.getProperty("user.home"), "tmp", "lottery$year.html")
+    val usedCache = !options.forceDownload && cachePath.exists()
+
+    val doc = getDocument(url, cachePath, forceDownload = options.forceDownload)
+    val categories = createCategories(doc)
+    if (categories.isEmpty()) {
+        val pageTitle = doc.title().ifBlank { "<untitled page>" }
+        val cacheHint = if (usedCache) {
+            "\n  - Note: Loaded from local cache file '$cachePath'. If this cached file is stale or incomplete, " +
+                "re-run with '--force-download'."
+        } else {
+            ""
+        }
+        throw LotteryDataException(
+            buildString {
+                appendLine("Failed to find a valid ticket counts table for the $year WSER lottery.")
+                appendLine("  - Source URL:  $url")
+                appendLine("  - Local Cache: $cachePath (usedCache=$usedCache)")
+                appendLine("  - Page Title:  \"$pageTitle\"$cacheHint")
+                appendLine()
+                appendLine("Why this happens:")
+                appendLine("  The $year lottery page on wser.org may not have published its ticket summary table yet,")
+                appendLine("  or the page structure for $year does not include a 'Tickets | Entrants | Total' summary table.")
+                appendLine()
+                appendLine("How to proceed:")
+                appendLine("  1. Target a different lottery year:")
+                appendLine("       ./gradlew run --args=\"2027\"")
+                appendLine("  2. Supply ticket counts from a local CSV/TSV/text file (2 columns: tickets,entrants):")
+                appendLine("       ./gradlew run --args=\"--file path/to/tickets.csv\"")
+                appendLine("  3. Supply ticket counts directly on the command line:")
+                appendLine("       ./gradlew run --args=\"--categories 1024:1,512:7,256:46,128:94,64:175,32:342,16:511,8:778,4:998,2:1435,1:1717\"")
+            }.trimEnd()
+        )
+    }
+    return categories
+}
+
+/**
+ * Loads categories from a local file ([filePath]), supporting both HTML files and plain-text
+ * CSV / TSV / whitespace / colon-delimited ticket count files.
+ *
+ * @throws LotteryDataException If the file does not exist, cannot be read, or contains no valid categories.
+ */
+fun loadCategoriesFromFile(filePath: Path): List<Category> {
+    if (!filePath.exists()) {
+        throw LotteryDataException(
+            "Input file not found: '$filePath'. Verify the path passed to --file / --input."
+        )
+    }
+
+    val rawContent = try {
+        filePath.readText()
+    } catch (e: IOException) {
+        throw LotteryDataException("Failed to read input file '$filePath': ${e.message}", e)
+    }
+
+    val fileNameLower = filePath.fileName?.toString()?.lowercase().orEmpty()
+    val looksLikeHtml = fileNameLower.endsWith(".html") ||
+        fileNameLower.endsWith(".htm") ||
+        rawContent.trimStart().startsWith("<")
+
+    if (looksLikeHtml) {
+        val doc = Jsoup.parse(rawContent)
+        val categories = createCategories(doc)
+        if (categories.isEmpty()) {
+            throw LotteryDataException(
+                "Failed to find a valid ticket counts table in HTML file '$filePath' (title: \"${doc.title()}\").\n" +
+                    "You can also provide a simple text/CSV file with 'tickets,entrants' per line."
+            )
+        }
+        return categories
+    }
+
+    return parseCategoriesText(rawContent, sourceDescription = filePath.toString())
+}
+
+/**
+ * Parses a multi-line text / CSV / TSV representation of lottery categories.
+ *
+ * Supported line formats (commas inside numbers are only allowed when tab- or colon-separated,
+ * or standard unquoted CSV `tickets,entrants[,total]`):
+ * - `1024, 1, 1024` or `1024, 1`
+ * - `1024:1`
+ * - `1024   1   1024` (whitespace/tab-separated)
+ *
+ * Blank lines, lines starting with `#` or `//`, and header lines (such as `Tickets,Entrants,Total`)
+ * are automatically ignored.
+ *
+ * @throws LotteryDataException If a numeric line is malformed or if no categories are found.
+ */
+fun parseCategoriesText(content: String, sourceDescription: String = "input"): List<Category> {
+    val categories = mutableListOf<Category>()
+
+    content.lineSequence().forEachIndexed { index, rawLine ->
+        val lineNum = index + 1
+        val line = rawLine.substringBefore('#').trim()
+        if (line.isEmpty() || line.startsWith("//")) return@forEachIndexed
+
+        val tokens = line.split(Regex("""[,:\t\s]+""")).filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return@forEachIndexed
+
+        // Skip header rows like "Tickets,Entrants,Total"
+        if (tokens[0].any { it.isLetter() }) return@forEachIndexed
+
+        if (tokens.size < 2) {
+            throw LotteryDataException(
+                "Malformed category entry at $sourceDescription:$lineNum ('$rawLine'). " +
+                    "Expected '<tickets>,<entrants>' (e.g., '1024,1')."
+            )
+        }
+
+        val tickets = tokens[0].replace("_", "").toIntOrNull()
+        val entrants = tokens[1].replace("_", "").toIntOrNull()
+        val total = if (tokens.size >= 3) {
+            tokens[2].replace("_", "").toIntOrNull()
+        } else if (tickets != null && entrants != null) {
+            tickets * entrants
+        } else {
+            null
+        }
+
+        if (tickets == null || entrants == null || total == null || tickets <= 0 || entrants <= 0) {
+            throw LotteryDataException(
+                "Invalid category numbers at $sourceDescription:$lineNum ('$rawLine'). " +
+                    "Both tickets and entrants must be positive integers."
+            )
+        }
+
+        categories.add(Category(tickets = tickets, entrants = entrants, total = total))
+    }
+
+    if (categories.isEmpty()) {
+        throw LotteryDataException(
+            "No valid ticket categories found in $sourceDescription. " +
+                "Expected lines of '<tickets>,<entrants>' (e.g., '1024,1')."
+        )
+    }
+
+    return categories
+}
+
+/**
+ * Parses an inline CLI category specification string such as:
+ * `"1024:1,512:7,256:46,128:94,64:175,32:342,16:511,8:778,4:998,2:1435,1:1717"`.
+ *
+ * Pairs may be separated by commas or semicolons, and key/value within each pair may be
+ * separated by `:` or `=`.
+ *
+ * @throws LotteryDataException If the specification is empty or contains malformed pairs.
+ */
+fun parseCategoriesSpec(spec: String): List<Category> {
+    val entries = spec.split(Regex("""[,;]+""")).map { it.trim() }.filter { it.isNotEmpty() }
+    if (entries.isEmpty()) {
+        throw LotteryDataException(
+            "Empty --categories specification. Expected 'tickets:entrants' pairs such as '1024:1,512:7,256:46'."
+        )
+    }
+
+    return entries.map { entry ->
+        val parts = entry.split(Regex("""[:=]""")).map { it.trim().replace("_", "") }
+        if (parts.size !in 2..3) {
+            throw LotteryDataException(
+                "Malformed category pair '$entry' in --categories. Expected '<tickets>:<entrants>' (e.g., '1024:1')."
+            )
+        }
+        val tickets = parts[0].toIntOrNull()
+        val entrants = parts[1].toIntOrNull()
+        if (tickets == null || entrants == null || tickets <= 0 || entrants <= 0) {
+            throw LotteryDataException(
+                "Invalid numbers in category pair '$entry'. Both tickets and entrants must be positive integers."
+            )
+        }
+        val total = if (parts.size == 3) {
+            parts[2].toIntOrNull() ?: throw LotteryDataException("Invalid total in category pair '$entry'.")
+        } else {
+            tickets * entrants
+        }
+        Category(tickets = tickets, entrants = entrants, total = total)
+    }
 }
 
 /**
@@ -312,6 +690,7 @@ private fun printOutcomeTable(
  * @param localCachePath Path to the local HTML cache file.
  * @param forceDownload When `true`, ignores any existing cached file and fetches fresh HTML.
  * @return The parsed Jsoup [Document].
+ * @throws LotteryDataException If the HTTP request fails or returns a non-2xx status code.
  */
 suspend fun getDocument(
     url: String,
@@ -332,49 +711,122 @@ suspend fun getDocument(
 }
 
 /**
- * Downloads the lottery HTML from [url] and persists it to [localCachePath].
+ * Downloads the lottery HTML from [url] and persists it to [localCachePath] only if the server
+ * returns a `2xx` HTTP response.
+ *
+ * Checking `response.status.isSuccess()` prevents caching `404 Not Found` pages when querying
+ * a future lottery year whose entrant page has not been published yet.
  */
 private suspend fun downloadAndCacheHtml(url: String, localCachePath: Path): String {
     println("Downloading lottery data from $url...")
-    return HttpClient(CIO).use { client ->
-        val response = client.get(url)
-        val content = response.bodyAsText()
-        localCachePath.parent?.toFile()?.mkdirs()
-        localCachePath.writeText(content)
-        content
+    return try {
+        HttpClient(CIO).use { client ->
+            val response = client.get(url)
+            if (!response.status.isSuccess()) {
+                throw LotteryDataException(
+                    buildString {
+                        appendLine("HTTP ${response.status.value} (${response.status.description}) when fetching $url.")
+                        appendLine("The lottery page for this year may not be published on wser.org yet.")
+                        appendLine()
+                        appendLine("How to proceed:")
+                        appendLine("  1. Target a published lottery year (e.g., ./gradlew run --args=\"2027\")")
+                        appendLine("  2. Provide a local CSV/TSV/HTML file: ./gradlew run --args=\"--file path/to/tickets.csv\"")
+                        appendLine("  3. Provide categories inline: ./gradlew run --args=\"--categories 1024:1,512:7,...\"")
+                    }.trimEnd()
+                )
+            }
+            val content = response.bodyAsText()
+            localCachePath.parent?.toFile()?.mkdirs()
+            localCachePath.writeText(content)
+            content
+        }
+    } catch (e: LotteryDataException) {
+        throw e
+    } catch (e: Exception) {
+        throw LotteryDataException(
+            "Network error while fetching lottery data from $url: ${e.message}\n" +
+                "You can supply offline data using --file <path> or --categories <spec>.",
+            e,
+        )
     }
 }
+
+private val PARENTHESIZED_NUMBER_REGEX = Regex("""\(\s*([\d,]+)\s*\)""")
 
 /**
  * Extracts the ticket category summary table from the parsed WSER HTML [Document].
  *
- * The WSER page uses spacer `<td>` columns between data cells, so we select every
- * even-indexed cell (`0, 2, 4`) corresponding to `Tickets`, `Entrants`, and `Total`.
+ * Supports both:
+ * 1. The standard WSER nested table layout (`Tickets | Entrants | Total`), and
+ * 2. Older WSER lottery pages (such as 2019–2020) where the first column header is
+ *    `Years (Tickets)` and cells are formatted as `"8 (128)"`.
+ *
+ * If the primary XPath does not match, falls back to locating any `<table>` whose header
+ * row contains both `"Tickets"` and `"Entrants"`.
  *
  * @param doc The parsed WSER lottery HTML document.
- * @return A list of [Category] records in document order.
+ * @return A list of [Category] records in document order, or an empty list if no valid table exists.
  */
 fun createCategories(doc: Document): List<Category> {
-    val path = "/html/body/div/table/tbody/tr[2]/td/table/tbody/tr[2]/td/table/tbody"
-    val elements = doc.selectXpath(path)
-    val rows = elements.select("tr")
+    val primaryXpath = "/html/body/div/table/tbody/tr[2]/td/table/tbody/tr[2]/td/table/tbody"
+    val primaryRows = doc.selectXpath(primaryXpath).select("tr")
+    val fromPrimary = parseCategoryRows(primaryRows.drop(1))
+    if (fromPrimary.isNotEmpty()) {
+        return fromPrimary
+    }
 
-    return rows.drop(1).mapNotNull { row ->
-        val numericCells = row.select("td")
-            .filterIndexed { index, _ -> index % 2 == 0 }
-            .mapNotNull { td -> td.text().replace(",", "").trim().toIntOrNull() }
+    // Fallback: locate any table whose header row mentions both "Tickets" and "Entrants"
+    for (table in doc.select("table")) {
+        val rows = table.select("> tbody > tr, > tr")
+        if (rows.size < 2) continue
+        val headerText = rows.first()!!.select("th, td").joinToString(" ") { it.text().lowercase() }
+        if ("tickets" in headerText && "entrants" in headerText) {
+            val parsed = parseCategoryRows(rows.drop(1))
+            if (parsed.isNotEmpty()) {
+                return parsed
+            }
+        }
+    }
 
-        if (numericCells.size >= 3) {
-            Category(
-                tickets = numericCells[0],
-                entrants = numericCells[1],
-                total = numericCells[2],
-            )
+    return emptyList()
+}
+
+private fun parseCategoryRows(rows: List<Element>): List<Category> {
+    return rows.mapNotNull { row ->
+        val tds = row.select("td")
+        val dataCells = when {
+            tds.size >= 5 -> tds.filterIndexed { index, _ -> index % 2 == 0 }
+            tds.size == 3 -> tds
+            else -> emptyList()
+        }
+
+        if (dataCells.size >= 3) {
+            val tickets = parseTicketCellCount(dataCells[0].text())
+            val entrants = parsePlainCount(dataCells[1].text())
+            val total = parsePlainCount(dataCells[2].text())
+            if (tickets != null && entrants != null && total != null && tickets > 0 && entrants > 0) {
+                Category(tickets = tickets, entrants = entrants, total = total)
+            } else {
+                null
+            }
         } else {
             null
         }
     }
 }
+
+/**
+ * Parses a ticket count cell, supporting both plain numbers (`"1,024"`) and legacy
+ * `Years (Tickets)` values (`"8 (128)"` -> `128`).
+ */
+private fun parseTicketCellCount(rawText: String): Int? {
+    parsePlainCount(rawText)?.let { return it }
+    val match = PARENTHESIZED_NUMBER_REGEX.find(rawText) ?: return null
+    return parsePlainCount(match.groupValues[1])
+}
+
+private fun parsePlainCount(rawText: String): Int? =
+    rawText.replace(",", "").replace("\u00a0", "").trim().toIntOrNull()
 
 /**
  * Executes [numSimulations] Monte Carlo trials for the main lottery spots only.

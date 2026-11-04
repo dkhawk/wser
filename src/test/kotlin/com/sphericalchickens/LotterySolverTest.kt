@@ -5,6 +5,9 @@ import com.sphericalchickens.gem2.calculateExactLotteryAndWaitlistProbabilities
 import com.sphericalchickens.gem2.calculateExactProbabilities
 import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
+import kotlin.io.path.createTempFile
+import kotlin.io.path.deleteIfExists
+import kotlin.io.path.writeText
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -255,6 +258,97 @@ class LotterySolverTest {
         assertTrue((probability * 100.0).format(3) == "42.238")
         assertTrue(probability.toPercentString(3) == "42.238")
         assertTrue(probability.toPercentString(1) == "42.2")
+    }
+
+    @Test
+    fun `parseCliArgs defaults to current year and supports positional or flagged year and alternate inputs`() {
+        val defaultOpts = parseCliArgs(emptyArray(), defaultYear = 2026)
+        assertTrue(defaultOpts.year == 2026)
+        assertTrue(!defaultOpts.forceDownload)
+        assertTrue(defaultOpts.inputFile == null)
+        assertTrue(defaultOpts.categoriesSpec == null)
+
+        val positionalYearOpts = parseCliArgs(arrayOf("2027", "--force-download"))
+        assertTrue(positionalYearOpts.year == 2027)
+        assertTrue(positionalYearOpts.forceDownload)
+
+        val flaggedOpts = parseCliArgs(
+            arrayOf("--year=2025", "--trials", "250_000", "--categories", "1024:1,512:7")
+        )
+        assertTrue(flaggedOpts.year == 2025)
+        assertTrue(flaggedOpts.numSimulations == 250_000)
+        assertTrue(flaggedOpts.categoriesSpec == "1024:1,512:7")
+    }
+
+    @Test
+    fun `createCategories supports legacy Years (Tickets) HTML format and fallback table discovery`() {
+        val legacy2020Html = """
+            <html>
+              <body>
+                <table>
+                  <tr>
+                    <th>Years (Tickets)</th><td>&nbsp;</td>
+                    <th>Entrants</th><td>&nbsp;</td>
+                    <th>Tickets</th>
+                  </tr>
+                  <tr>
+                    <td>8 (128)</td><td>&nbsp;</td>
+                    <td>9</td><td>&nbsp;</td>
+                    <td>1152</td>
+                  </tr>
+                  <tr>
+                    <td>7 (64)</td><td>&nbsp;</td>
+                    <td>54</td><td>&nbsp;</td>
+                    <td>3456</td>
+                  </tr>
+                </table>
+              </body>
+            </html>
+        """.trimIndent()
+
+        val categories = createCategories(Jsoup.parse(legacy2020Html))
+        assertEquals(
+            listOf(
+                Category(tickets = 128, entrants = 9, total = 1152),
+                Category(tickets = 64, entrants = 54, total = 3456),
+            ),
+            categories,
+        )
+    }
+
+    @Test
+    fun `parseCategoriesText and parseCategoriesSpec load alternate category inputs and report clear errors`() {
+        val csvInput = """
+            # Sample WSER ticket distribution
+            Tickets,Entrants
+            1024, 1
+            512, 7, 3584
+            256: 46
+        """.trimIndent()
+
+        val fromCsv = parseCategoriesText(csvInput)
+        assertEquals(
+            listOf(
+                Category(tickets = 1024, entrants = 1, total = 1024),
+                Category(tickets = 512, entrants = 7, total = 3584),
+                Category(tickets = 256, entrants = 46, total = 11776),
+            ),
+            fromCsv,
+        )
+
+        val fromSpec = parseCategoriesSpec("1024:1,512:7;256=46")
+        assertEquals(fromCsv, fromSpec)
+
+        val tempHtml = createTempFile(prefix = "empty-wser-", suffix = ".html")
+        try {
+            tempHtml.writeText("<html><head><title>404 Not Found</title></head><body>No table</body></html>")
+            val error = runCatching { loadCategoriesFromFile(tempHtml) }.exceptionOrNull()
+            assertTrue(error is LotteryDataException)
+            assertTrue(error.message!!.contains("Failed to find a valid ticket counts table"))
+            assertTrue(error.message!!.contains("404 Not Found"))
+        } finally {
+            tempHtml.deleteIfExists()
+        }
     }
 }
 

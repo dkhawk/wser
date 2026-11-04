@@ -3,15 +3,13 @@ package com.sphericalchickens.gem
 import com.sphericalchickens.Category
 import com.sphericalchickens.DEFAULT_LOTTERY_SPOTS
 import com.sphericalchickens.DEFAULT_NUM_SIMULATIONS
-import com.sphericalchickens.YEAR
-import com.sphericalchickens.createCategories
-import com.sphericalchickens.getDocument
+import com.sphericalchickens.loadCategories
+import com.sphericalchickens.parseCliArgs
 import com.sphericalchickens.runSimulations
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import kotlin.io.path.Path
 import kotlin.system.measureTimeMillis
 
 /**
@@ -28,30 +26,22 @@ fun Double.toPercentString(digits: Int = 3): String {
 /**
  * Entry point for the optimized parallel Monte Carlo solver.
  *
- * Pass `--force-download` in [args] to bypass the local HTML cache and re-download
- * the latest entrant data from `wser.org`.
+ * Supports all CLI options parsed by [parseCliArgs] (`--year`, `--force-download`, `--file`, `--categories`, `--trials`).
  */
 fun main(args: Array<String>) {
-    val forceDownload = "--force-download" in args
+    val options = parseCliArgs(args)
     val totalTimeMs = measureTimeMillis {
         runBlocking {
-            val url = "https://www.wser.org/lottery$YEAR.html"
-            val localCachePath = Path(System.getProperty("user.home"), "tmp", "lottery$YEAR.html")
-            val numSimulations = DEFAULT_NUM_SIMULATIONS
+            val categories = loadCategories(options)
 
-            println("Fetching data from $url with local cache at $localCachePath...")
-
-            val doc = getDocument(url, localCachePath, forceDownload = forceDownload)
-            val categories = createCategories(doc)
-
-            println("\n--- Part 1: Category Data ---")
+            println("\n--- Part 1: Category Data (${options.sourceLabel}) ---")
             println(categories.joinToString("\n"))
 
-            println("\n--- Part 2: Starting $numSimulations Parallel Simulations ---")
+            println("\n--- Part 2: Starting ${options.numSimulations} Parallel Simulations ---")
             val startTime = System.currentTimeMillis()
 
             val results = withContext(Dispatchers.Default) {
-                runParallelSimulations(this, categories, numSimulations)
+                runParallelSimulations(this, categories, options.numSimulations)
             }
 
             val endTime = System.currentTimeMillis()
