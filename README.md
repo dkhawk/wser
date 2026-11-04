@@ -1,5 +1,7 @@
 # Western States 100 (WSER) Lottery & Waitlist Probability Calculator
 
+![WSER 100 Lottery & Waitlist Probability Solver Banner](docs/images/wser_hero_banner.svg)
+
 A high-performance Kotlin calculator that computes **exact** and **simulated** selection probabilities for the [Western States Endurance Run (WSER)](https://www.wser.org/) 100-mile lottery and waitlist.
 
 ---
@@ -14,9 +16,13 @@ A high-performance Kotlin calculator that computes **exact** and **simulated** s
    - The first **260** unique athletes drawn win a spot in the **Main Lottery**.
    - The next **50 to 75** unique athletes drawn (draw positions `261` through `335`) are placed in order on the **Waitlist**.
 
+![WSER Main Lottery S-Curve and Waitlist Sweet-Spot Wave](docs/images/wser_probability_curves.svg)
+
 ---
 
 ## Dual-Solver Architecture
+
+![WSER Dual-Solver Architecture Pipeline](docs/images/wser_architecture_flow.svg)
 
 This project implements two independent methods to compute selection probabilities and cross-validates them against each other:
 

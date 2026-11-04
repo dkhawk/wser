@@ -1,0 +1,194 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 380" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bgPanel" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="mainCurveFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.40"/>
+      <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.02"/>
+    </linearGradient>
+    <linearGradient id="wlCurveFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.42"/>
+      <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.02"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Outer Card -->
+  <rect width="1000" height="380" rx="16" fill="url(#bgPanel)" stroke="#334155" stroke-width="1.5"/>
+
+  <!-- ==================== LEFT PANEL: MAIN LOTTERY S-CURVE ==================== -->
+  <g transform="translate(30, 25)">
+    <rect width="455" height="330" rx="12" fill="#090d16" fill-opacity="0.55" stroke="#334155" stroke-width="1"/>
+
+    <text x="22" y="30" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="800" fill="#f8fafc">
+      1. Main Lottery S-Curve (Spots 1–260)
+    </text>
+    <text x="22" y="48" font-family="system-ui, -apple-system, sans-serif" font-size="11.5" fill="#94a3b8">
+      Selection probability rises smoothly then saturates near 100%
+    </text>
+
+    <!-- Grid Lines -->
+    <g stroke="#1e293b" stroke-width="1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#64748b">
+      <line x1="52" y1="75" x2="430" y2="75"/>
+      <text x="45" y="79" text-anchor="end" stroke="none">100%</text>
+
+      <line x1="52" y1="125" x2="430" y2="125"/>
+      <text x="45" y="129" text-anchor="end" stroke="none">75%</text>
+
+      <line x1="52" y1="175" x2="430" y2="175"/>
+      <text x="45" y="179" text-anchor="end" stroke="none">50%</text>
+
+      <line x1="52" y1="225" x2="430" y2="225"/>
+      <text x="45" y="229" text-anchor="end" stroke="none">25%</text>
+
+      <line x1="52" y1="275" x2="430" y2="275" stroke="#475569"/>
+      <text x="45" y="279" text-anchor="end" stroke="none">0%</text>
+    </g>
+
+    <!-- Area & Curve for Main Lottery Odds (1..1024 tickets) -->
+    <!-- x coords: 60 + idx * 36 (idx 0..10 -> 60..420) -->
+    <!-- y = 275 - 2.0 * pct -->
+    <path d="M 60,274.1 L 96,273.3 L 132,271.6 L 168,268.3 L 204,261.7 L 240,249.4 L 276,227.0 L 312,190.5 L 348,141.7 L 384,97.3 L 420,77.5 L 420,275 L 60,275 Z"
+          fill="url(#mainCurveFill)"/>
+
+    <polyline points="60,274.1 96,273.3 132,271.6 168,268.3 204,261.7 240,249.4 276,227.0 312,190.5 348,141.7 384,97.3 420,77.5"
+              fill="none" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Data Points & Highlight Labels -->
+    <g fill="#38bdf8" stroke="#0f172a" stroke-width="1.5">
+      <circle cx="60" cy="274.1" r="4"/>
+      <circle cx="96" cy="273.3" r="4"/>
+      <circle cx="132" cy="271.6" r="4"/>
+      <circle cx="168" cy="268.3" r="4"/>
+      <circle cx="204" cy="261.7" r="4"/>
+      <circle cx="240" cy="249.4" r="4.5"/>
+      <circle cx="276" cy="227.0" r="4.5"/>
+      <circle cx="312" cy="190.5" r="5"/>
+      <circle cx="348" cy="141.7" r="5"/>
+      <circle cx="384" cy="97.3" r="5"/>
+      <circle cx="420" cy="77.5" r="5.5" fill="#fde047"/>
+    </g>
+
+    <!-- Value Callouts -->
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9.5" font-weight="700" fill="#bae6fd">
+      <text x="236" y="240" text-anchor="middle">12.8%</text>
+      <text x="272" y="217" text-anchor="middle">24.0%</text>
+      <text x="304" y="182" text-anchor="end">42.2%</text>
+      <text x="340" y="135" text-anchor="end">66.6%</text>
+      <text x="376" y="92" text-anchor="end">88.8%</text>
+      <text x="415" y="69" text-anchor="end" fill="#fde047">98.7%</text>
+    </g>
+
+    <!-- X-Axis Ticket Labels -->
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9.5" fill="#94a3b8" text-anchor="middle">
+      <text x="60" y="293">1</text>
+      <text x="96" y="293">2</text>
+      <text x="132" y="293">4</text>
+      <text x="168" y="293">8</text>
+      <text x="204" y="293">16</text>
+      <text x="240" y="293">32</text>
+      <text x="276" y="293">64</text>
+      <text x="312" y="293">128</text>
+      <text x="348" y="293">256</text>
+      <text x="384" y="293">512</text>
+      <text x="420" y="293">1024</text>
+      <text x="240" y="314" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#cbd5e1">
+        Tickets Held by Entrant (2^(n-1))
+      </text>
+    </g>
+  </g>
+
+  <!-- ==================== RIGHT PANEL: WAITLIST SWEET-SPOT BELL CURVE ==================== -->
+  <g transform="translate(515, 25)">
+    <rect width="455" height="330" rx="12" fill="#090d16" fill-opacity="0.55" stroke="#334155" stroke-width="1"/>
+
+    <text x="22" y="30" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="800" fill="#f8fafc">
+      2. The Waitlist "Sweet Spot" Wave (Draws 261–335)
+    </text>
+    <text x="22" y="48" font-family="system-ui, -apple-system, sans-serif" font-size="11.5" fill="#94a3b8">
+      Peaks at 128–256 tickets, then drops as 512+ winners are already in!
+    </text>
+
+    <!-- Grid Lines (0% to 12%) -->
+    <g stroke="#1e293b" stroke-width="1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#64748b">
+      <line x1="52" y1="75" x2="430" y2="75"/>
+      <text x="45" y="79" text-anchor="end" stroke="none">12%</text>
+
+      <line x1="52" y1="125" x2="430" y2="125"/>
+      <text x="45" y="129" text-anchor="end" stroke="none">9%</text>
+
+      <line x1="52" y1="175" x2="430" y2="175"/>
+      <text x="45" y="179" text-anchor="end" stroke="none">6%</text>
+
+      <line x1="52" y1="225" x2="430" y2="225"/>
+      <text x="45" y="229" text-anchor="end" stroke="none">3%</text>
+
+      <line x1="52" y1="275" x2="430" y2="275" stroke="#475569"/>
+      <text x="45" y="279" text-anchor="end" stroke="none">0%</text>
+    </g>
+
+    <!-- Waitlist Top 75 Curve (y = 275 - (pct / 12.0) * 200) -->
+    <!-- WL 1-75 pcts: 0.15, 0.30, 0.60, 1.17, 2.25, 4.15, 7.06, 10.23, 10.76, 6.03, 1.00 -->
+    <path d="M 60,272.5 L 96,270.0 L 132,265.0 L 168,255.5 L 204,237.5 L 240,205.8 L 276,157.3 L 312,104.5 L 348,95.7 L 384,174.5 L 420,258.3 L 420,275 L 60,275 Z"
+          fill="url(#wlCurveFill)"/>
+
+    <polyline points="60,272.5 96,270.0 132,265.0 168,255.5 204,237.5 240,205.8 276,157.3 312,104.5 348,95.7 384,174.5 420,258.3"
+              fill="none" stroke="#f59e0b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Waitlist Top 50 Curve (Dashed Emerald) -->
+    <!-- WL 1-50 pcts: 0.10, 0.20, 0.39, 0.77, 1.48, 2.75, 4.72, 6.94, 7.53, 4.46, 0.81 -->
+    <polyline points="60,273.3 96,271.7 132,268.5 168,262.2 204,250.3 240,229.2 276,196.3 312,159.3 348,149.5 384,200.7 420,261.5"
+              fill="none" stroke="#10b981" stroke-width="2.5" stroke-dasharray="6 4" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Points on WL 1-75 -->
+    <g fill="#f59e0b" stroke="#0f172a" stroke-width="1.5">
+      <circle cx="60" cy="272.5" r="3.5"/>
+      <circle cx="96" cy="270.0" r="3.5"/>
+      <circle cx="132" cy="265.0" r="3.5"/>
+      <circle cx="168" cy="255.5" r="3.5"/>
+      <circle cx="204" cy="237.5" r="4"/>
+      <circle cx="240" cy="205.8" r="4"/>
+      <circle cx="276" cy="157.3" r="4.5"/>
+      <circle cx="312" cy="104.5" r="5"/>
+      <circle cx="348" cy="95.7" r="5.5" fill="#fde047"/>
+      <circle cx="384" cy="174.5" r="4.5"/>
+      <circle cx="420" cy="258.3" r="4"/>
+    </g>
+
+    <!-- Callout Annotations -->
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9.5" font-weight="700" fill="#fde68a">
+      <text x="312" y="94" text-anchor="middle">10.2%</text>
+      <text x="348" y="84" text-anchor="middle" fill="#fde047">10.8% Peak</text>
+      <text x="394" y="169" text-anchor="start">6.0%</text>
+      <text x="420" y="248" text-anchor="middle">1.0%</text>
+    </g>
+
+    <!-- Legend -->
+    <g transform="translate(65, 82)" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#e2e8f0">
+      <line x1="0" y1="0" x2="22" y2="0" stroke="#f59e0b" stroke-width="3"/>
+      <text x="28" y="4">Waitlist 1–75</text>
+
+      <line x1="0" y1="18" x2="22" y2="18" stroke="#10b981" stroke-width="2.5" stroke-dasharray="5 3"/>
+      <text x="28" y="22">Waitlist 1–50</text>
+    </g>
+
+    <!-- X-Axis Ticket Labels -->
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9.5" fill="#94a3b8" text-anchor="middle">
+      <text x="60" y="293">1</text>
+      <text x="96" y="293">2</text>
+      <text x="132" y="293">4</text>
+      <text x="168" y="293">8</text>
+      <text x="204" y="293">16</text>
+      <text x="240" y="293">32</text>
+      <text x="276" y="293">64</text>
+      <text x="312" y="293">128</text>
+      <text x="348" y="293">256</text>
+      <text x="384" y="293">512</text>
+      <text x="420" y="293">1024</text>
+      <text x="240" y="314" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#cbd5e1">
+        Tickets Held by Entrant (2^(n-1))
+      </text>
+    </g>
+  </g>
+</svg>
