@@ -79,6 +79,11 @@ val DEFAULT_WAITLIST_BUCKETS: List<WaitlistBucket> = listOf(
 )
 
 /**
+ * 5-slot waitlist cumulative step thresholds (`5, 10, 15, ..., 75`).
+ */
+val DEFAULT_WAITLIST_5_SLOT_STEPS: List<Int> = (5..WAITLIST_SIZE_75 step 5).toList()
+
+/**
  * Represents a single ticket tier (category) in the WSER lottery.
  *
  * Because WSER awards $2^{n-1}$ tickets for $n$ consecutive years in the lottery,
@@ -112,7 +117,8 @@ data class WaitlistBucket(
 
 /**
  * Complete probability distribution across the main lottery, 10-runner waitlist buckets,
- * and cumulative waitlist thresholds (`1..10`, `1..25`, `1..50`, `1..75`) for each ticket category.
+ * cumulative waitlist thresholds (`1..10`, `1..25`, `1..50`, `1..75`), and 5-slot cumulative
+ * waitlist milestones (`5, 10, 15, ..., 75`) for each ticket category.
  *
  * @property mainLottery Map of (`tickets -> probability of winning one of the main lottery spots`).
  * @property waitlistByBucket Map of (`WaitlistBucket -> (tickets -> probability of landing in that bucket)`).
@@ -120,6 +126,7 @@ data class WaitlistBucket(
  * @property waitlistTop25 Map of (`tickets -> probability of landing in waitlist positions 1..25`).
  * @property waitlistTop50 Map of (`tickets -> probability of landing in waitlist positions 1..50`).
  * @property waitlistTop75 Map of (`tickets -> probability of landing in waitlist positions 1..75`).
+ * @property waitlistCumulativeBy5 Map of (`maxWaitlistRank (5, 10, ..., 75) -> (tickets -> probability of landing in waitlist 1..maxWaitlistRank)`).
  */
 data class LotteryOutcomeProbabilities(
     val mainLottery: Map<Int, Double>,
@@ -128,6 +135,7 @@ data class LotteryOutcomeProbabilities(
     val waitlistTop25: Map<Int, Double>,
     val waitlistTop50: Map<Int, Double>,
     val waitlistTop75: Map<Int, Double>,
+    val waitlistCumulativeBy5: Map<Int, Map<Int, Double>> = emptyMap(),
 )
 
 /**
@@ -138,6 +146,7 @@ data class LotteryOutcomeProbabilities(
  * @property inputFile Optional path to a local CSV/TSV/whitespace text file or HTML file containing ticket counts.
  * @property categoriesSpec Optional inline category string (e.g. `"1024:1,512:7,256:46"`).
  * @property markdownOut Optional file path to write a formatted GitHub Markdown report (e.g. `RESULTS_2027.md`).
+ * @property htmlOut Optional file path to write an interactive static HTML report (e.g. `docs/index.html`).
  * @property numSimulations Number of Monte Carlo trials to run.
  * @property showHelp Whether `--help` / `-h` was requested.
  */
@@ -147,6 +156,7 @@ data class CliOptions(
     val inputFile: Path? = null,
     val categoriesSpec: String? = null,
     val markdownOut: Path? = null,
+    val htmlOut: Path? = null,
     val numSimulations: Int = DEFAULT_NUM_SIMULATIONS,
     val showHelp: Boolean = false,
 ) {
@@ -189,6 +199,7 @@ class LotteryDataException(message: String, cause: Throwable? = null) : RuntimeE
  * - `--file <path>` / `--file=<path>` / `--input <path>`: Load ticket counts from a local CSV/TSV/text or HTML file.
  * - `--categories <spec>` / `--categories=<spec>`: Supply inline `tickets:entrants` pairs (e.g. `"1024:1,512:7,..."`).
  * - `--markdown-out <path>` / `--markdown-out=<path>`: Write a formatted GitHub Markdown report to `<path>`.
+ * - `--html-out <path>` / `--html-out=<path>`: Write a static HTML dashboard with per-bucket cumulative graphs to `<path>`.
  * - `--trials <n>` / `--trials=<n>` / `--simulations <n>`: Number of Monte Carlo simulation runs.
  * - `--help` / `-h`: Print CLI usage instructions.
  *
@@ -200,6 +211,7 @@ fun parseCliArgs(args: Array<String>, defaultYear: Int = YEAR): CliOptions {
     var inputFile: Path? = null
     var categoriesSpec: String? = null
     var markdownOut: Path? = null
+    var htmlOut: Path? = null
     var numSimulations = DEFAULT_NUM_SIMULATIONS
     var showHelp = false
 
@@ -248,6 +260,15 @@ fun parseCliArgs(args: Array<String>, defaultYear: Int = YEAR): CliOptions {
             arg.startsWith("--markdown-out=") -> markdownOut = Path(arg.substringAfter("--markdown-out="))
             arg.startsWith("--output=") -> markdownOut = Path(arg.substringAfter("--output="))
 
+            arg == "--html-out" -> {
+                val next = args.getOrNull(++i)
+                    ?: throw IllegalArgumentException(
+                        "Missing file path after '$arg'. Example: --html-out docs/index.html"
+                    )
+                htmlOut = Path(next)
+            }
+            arg.startsWith("--html-out=") -> htmlOut = Path(arg.substringAfter("--html-out="))
+
             arg == "--trials" || arg == "--simulations" -> {
                 val next = args.getOrNull(++i)
                     ?: throw IllegalArgumentException("Missing integer value after '$arg'. Example: --trials 1000000")
@@ -280,6 +301,7 @@ fun parseCliArgs(args: Array<String>, defaultYear: Int = YEAR): CliOptions {
         inputFile = inputFile,
         categoriesSpec = categoriesSpec,
         markdownOut = markdownOut,
+        htmlOut = htmlOut,
         numSimulations = numSimulations,
         showHelp = showHelp,
     )
@@ -316,7 +338,7 @@ fun cliUsageText(): String = """
       --categories <spec>               Pass ticket counts inline on the command line as comma-separated pairs.
                                         Example: --categories "1024:1,512:7,256:46,128:94,64:175,32:342,16:511,8:778,4:998,2:1435,1:1717"
       --markdown-out <path>             Write a formatted GitHub Markdown report (with daily history) to <path>.
-                                        Example: ./gradlew run --args="2027 --force-download --markdown-out RESULTS_2027.md"
+      --html-out <path>                 Write a static HTML report with per-bucket cumulative graphs to <path>.
       --trials, --simulations <count>   Number of Monte Carlo trials to run (default: $DEFAULT_NUM_SIMULATIONS).
       -h, --help                        Show this help message and exit.
 """.trimIndent()
@@ -438,6 +460,17 @@ fun main(args: Array<String>) {
                         formulaOutcomes = formulaOutcomes,
                     )
                     println("Markdown Report Written: $outPath")
+                }
+
+                options.htmlOut?.let { outPath ->
+                    writeHtmlReport(
+                        outputPath = outPath,
+                        options = options,
+                        loadedData = loadedData,
+                        simulatedOutcomes = simulatedOutcomes,
+                        formulaOutcomes = formulaOutcomes,
+                    )
+                    println("HTML Report Written:     $outPath")
                 }
             }
         }
@@ -1053,6 +1086,9 @@ suspend fun runLotteryAndWaitlistSimulations(
     val waitlist25Probs = probabilitiesForDrawRange(spots, spots + WAITLIST_SIZE_25)
     val waitlist50Probs = probabilitiesForDrawRange(spots, spots + WAITLIST_SIZE_50)
     val waitlist75Probs = probabilitiesForDrawRange(spots, spots + WAITLIST_SIZE_75)
+    val waitlistCumBy5 = DEFAULT_WAITLIST_5_SLOT_STEPS.associateWith { stepEnd ->
+        probabilitiesForDrawRange(spots, spots + stepEnd)
+    }
 
     return LotteryOutcomeProbabilities(
         mainLottery = mainLotteryProbs,
@@ -1061,6 +1097,7 @@ suspend fun runLotteryAndWaitlistSimulations(
         waitlistTop25 = waitlist25Probs,
         waitlistTop50 = waitlist50Probs,
         waitlistTop75 = waitlist75Probs,
+        waitlistCumulativeBy5 = waitlistCumBy5,
     )
 }
 

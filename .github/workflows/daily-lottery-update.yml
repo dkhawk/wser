@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   update-lottery-results:
@@ -36,18 +38,18 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
-      - name: Run 2027 WSER Lottery Simulation & Generate RESULTS_2027.md
+      - name: Run 2027 WSER Lottery Simulation & Generate Reports
         if: steps.date_check.outputs.skip != 'true'
-        run: ./gradlew run -q --args="2027 --force-download --markdown-out RESULTS_2027.md"
+        run: ./gradlew run -q --args="2027 --force-download --markdown-out RESULTS_2027.md --html-out docs/index.html"
 
-      - name: Commit and push RESULTS_2027.md if updated
+      - name: Commit and push RESULTS_2027.md and docs/index.html if updated
         if: steps.date_check.outputs.skip != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add RESULTS_2027.md
+          git add RESULTS_2027.md docs/index.html
           if git diff --staged --quiet; then
-            echo "No changes to RESULTS_2027.md"
+            echo "No changes to RESULTS_2027.md or docs/index.html"
           else
             git commit -m "Update 2027 WSER lottery probabilities ($(date -u +'%Y-%m-%d')) [skip ci]"
             git push

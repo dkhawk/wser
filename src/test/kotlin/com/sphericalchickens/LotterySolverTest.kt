@@ -395,5 +395,48 @@ class LotterySolverTest {
             tempMd.deleteIfExists()
         }
     }
+
+    @Test
+    fun `writeHtmlReport generates per-bucket 5-slot cumulative SVG charts and monotonically increasing milestones`() {
+        val options = parseCliArgs(arrayOf("2027", "--html-out", "docs/index.html"))
+        assertEquals("docs/index.html", options.htmlOut?.toString())
+
+        val outcomes = calculateExactLotteryAndWaitlistProbabilities(
+            categories = wser2027Categories,
+            spots = DEFAULT_LOTTERY_SPOTS,
+            waitlistBuckets = DEFAULT_WAITLIST_BUCKETS,
+        )
+
+        // Verify that for every ticket tier, cumulative waitlist probabilities strictly increase across 5, 10, ..., 75
+        for (cat in wser2027Categories) {
+            var prev = 0.0
+            for (stepEnd in DEFAULT_WAITLIST_5_SLOT_STEPS) {
+                val curr = outcomes.waitlistCumulativeBy5.getValue(stepEnd).getValue(cat.tickets)
+                assertTrue(curr > prev)
+                prev = curr
+            }
+            assertTrue(abs(outcomes.waitlistCumulativeBy5.getValue(50).getValue(cat.tickets) - outcomes.waitlistTop50.getValue(cat.tickets)) < 1e-12)
+            assertTrue(abs(outcomes.waitlistCumulativeBy5.getValue(75).getValue(cat.tickets) - outcomes.waitlistTop75.getValue(cat.tickets)) < 1e-12)
+        }
+
+        val tempHtmlOut = createTempFile(prefix = "wser-dashboard-", suffix = ".html")
+        try {
+            writeHtmlReport(
+                outputPath = tempHtmlOut,
+                options = options,
+                loadedData = LoadedLotteryData(wser2027Categories, "11-09-2026 08:05:51 AM"),
+                simulatedOutcomes = outcomes,
+                formulaOutcomes = outcomes,
+                snapshotDateUtc = "2026-11-09",
+            )
+            val html = tempHtmlOut.readText()
+            assertTrue(html.contains("id=\"bucket-1\""))
+            assertTrue(html.contains("id=\"bucket-1024\""))
+            assertTrue(html.contains("Content-Security-Policy"))
+            assertTrue(html.contains("+75"))
+        } finally {
+            tempHtmlOut.deleteIfExists()
+        }
+    }
 }
 
