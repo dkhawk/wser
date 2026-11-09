@@ -17,7 +17,9 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.io.IOException
 import java.nio.file.Path
+import java.time.LocalDate
 import java.time.Year
+import java.time.ZoneOffset
 import java.util.concurrent.ThreadLocalRandom
 import kotlin.io.path.Path
 import kotlin.io.path.exists
@@ -135,6 +137,7 @@ data class LotteryOutcomeProbabilities(
  * @property forceDownload Whether to bypass the local HTML cache and fetch fresh data from `wser.org`.
  * @property inputFile Optional path to a local CSV/TSV/whitespace text file or HTML file containing ticket counts.
  * @property categoriesSpec Optional inline category string (e.g. `"1024:1,512:7,256:46"`).
+ * @property markdownOut Optional file path to write a formatted GitHub Markdown report (e.g. `RESULTS_2027.md`).
  * @property numSimulations Number of Monte Carlo trials to run.
  * @property showHelp Whether `--help` / `-h` was requested.
  */
@@ -143,6 +146,7 @@ data class CliOptions(
     val forceDownload: Boolean = false,
     val inputFile: Path? = null,
     val categoriesSpec: String? = null,
+    val markdownOut: Path? = null,
     val numSimulations: Int = DEFAULT_NUM_SIMULATIONS,
     val showHelp: Boolean = false,
 ) {
@@ -156,6 +160,17 @@ data class CliOptions(
             else -> "$year WSER Lottery"
         }
 }
+
+/**
+ * Container for loaded lottery categories and any upstream metadata scraped from `wser.org`.
+ *
+ * @property categories The parsed ticket tiers.
+ * @property lastUpdated Optional `"Last Updated"` timestamp extracted from the WSER HTML page.
+ */
+data class LoadedLotteryData(
+    val categories: List<Category>,
+    val lastUpdated: String? = null,
+)
 
 /**
  * Exception thrown when WSER lottery ticket count data cannot be fetched or parsed.
@@ -173,6 +188,7 @@ class LotteryDataException(message: String, cause: Throwable? = null) : RuntimeE
  * - `--force-download` / `-f`: Re-download the HTML page from `wser.org` even if cached locally.
  * - `--file <path>` / `--file=<path>` / `--input <path>`: Load ticket counts from a local CSV/TSV/text or HTML file.
  * - `--categories <spec>` / `--categories=<spec>`: Supply inline `tickets:entrants` pairs (e.g. `"1024:1,512:7,..."`).
+ * - `--markdown-out <path>` / `--markdown-out=<path>`: Write a formatted GitHub Markdown report to `<path>`.
  * - `--trials <n>` / `--trials=<n>` / `--simulations <n>`: Number of Monte Carlo simulation runs.
  * - `--help` / `-h`: Print CLI usage instructions.
  *
@@ -183,6 +199,7 @@ fun parseCliArgs(args: Array<String>, defaultYear: Int = YEAR): CliOptions {
     var forceDownload = false
     var inputFile: Path? = null
     var categoriesSpec: String? = null
+    var markdownOut: Path? = null
     var numSimulations = DEFAULT_NUM_SIMULATIONS
     var showHelp = false
 
@@ -221,6 +238,16 @@ fun parseCliArgs(args: Array<String>, defaultYear: Int = YEAR): CliOptions {
             arg.startsWith("--categories=") -> categoriesSpec = arg.substringAfter("--categories=")
             arg.startsWith("--data=") -> categoriesSpec = arg.substringAfter("--data=")
 
+            arg == "--markdown-out" || arg == "--output" -> {
+                val next = args.getOrNull(++i)
+                    ?: throw IllegalArgumentException(
+                        "Missing file path after '$arg'. Example: --markdown-out RESULTS_2027.md"
+                    )
+                markdownOut = Path(next)
+            }
+            arg.startsWith("--markdown-out=") -> markdownOut = Path(arg.substringAfter("--markdown-out="))
+            arg.startsWith("--output=") -> markdownOut = Path(arg.substringAfter("--output="))
+
             arg == "--trials" || arg == "--simulations" -> {
                 val next = args.getOrNull(++i)
                     ?: throw IllegalArgumentException("Missing integer value after '$arg'. Example: --trials 1000000")
@@ -252,6 +279,7 @@ fun parseCliArgs(args: Array<String>, defaultYear: Int = YEAR): CliOptions {
         forceDownload = forceDownload,
         inputFile = inputFile,
         categoriesSpec = categoriesSpec,
+        markdownOut = markdownOut,
         numSimulations = numSimulations,
         showHelp = showHelp,
     )
@@ -287,6 +315,8 @@ fun cliUsageText(): String = """
                                         Format per line: <tickets>,<entrants>[,<total>]
       --categories <spec>               Pass ticket counts inline on the command line as comma-separated pairs.
                                         Example: --categories "1024:1,512:7,256:46,128:94,64:175,32:342,16:511,8:778,4:998,2:1435,1:1717"
+      --markdown-out <path>             Write a formatted GitHub Markdown report (with daily history) to <path>.
+                                        Example: ./gradlew run --args="2027 --force-download --markdown-out RESULTS_2027.md"
       --trials, --simulations <count>   Number of Monte Carlo trials to run (default: $DEFAULT_NUM_SIMULATIONS).
       -h, --help                        Show this help message and exit.
 """.trimIndent()
@@ -295,7 +325,7 @@ fun cliUsageText(): String = """
  * Entry point for the WSER Lottery & Waitlist probability calculator.
  *
  * Measures and reports execution time for each distinct stage:
- * 1. **Data Loading & Parsing** ([loadCategories])
+ * 1. **Data Loading & Parsing** ([loadLotteryData])
  * 2. **Parallel Monte Carlo Simulation** ([runLotteryAndWaitlistSimulations])
  * 3. **Analytical Formula Solution** ([calculateExactLotteryAndWaitlistProbabilities])
  *
@@ -319,11 +349,13 @@ fun main(args: Array<String>) {
         val (_, totalDuration) = measureTimedValue {
             runBlocking {
                 // --- Phase 1: Load and parse WSER lottery data ---
-                val (categories, loadDuration) = measureTimedValue {
-                    loadCategories(options)
+                val (loadedData, loadDuration) = measureTimedValue {
+                    loadLotteryData(options)
                 }
+                val categories = loadedData.categories
 
                 println("=== Part 1: Category Data (${options.sourceLabel}) ===")
+                loadedData.lastUpdated?.let { println("WSER Page Last Updated: $it") }
                 println(categories.joinToString("\n"))
                 println("Data Load & Parse Time: $loadDuration\n")
 
@@ -396,6 +428,17 @@ fun main(args: Array<String>) {
                 println("Data Load Time:          $loadDuration")
                 println("Monte Carlo Time:        $simDuration")
                 println("Formula Solution Time:   $formulaDuration")
+
+                options.markdownOut?.let { outPath ->
+                    writeMarkdownReport(
+                        outputPath = outPath,
+                        options = options,
+                        loadedData = loadedData,
+                        simulatedOutcomes = simulatedOutcomes,
+                        formulaOutcomes = formulaOutcomes,
+                    )
+                    println("Markdown Report Written: $outPath")
+                }
             }
         }
 
@@ -407,7 +450,12 @@ fun main(args: Array<String>) {
 }
 
 /**
- * Loads WSER ticket count categories according to [options]:
+ * Loads WSER ticket count categories according to [options].
+ */
+suspend fun loadCategories(options: CliOptions): List<Category> = loadLotteryData(options).categories
+
+/**
+ * Loads WSER ticket count categories and upstream `"Last Updated"` metadata according to [options]:
  * 1. From an inline `--categories` CLI specification if provided,
  * 2. From a local `--file` / `--input` path (CSV/TSV/whitespace text or HTML) if provided, or
  * 3. From `https://www.wser.org/lottery<year>.html` (using the local cache at `~/tmp/lottery<year>.html`).
@@ -415,13 +463,13 @@ fun main(args: Array<String>) {
  * @throws LotteryDataException With a clear explanation and fallback instructions if the data
  *   cannot be retrieved or if no valid ticket counts table is found.
  */
-suspend fun loadCategories(options: CliOptions): List<Category> {
+suspend fun loadLotteryData(options: CliOptions): LoadedLotteryData {
     options.categoriesSpec?.let { spec ->
-        return parseCategoriesSpec(spec)
+        return LoadedLotteryData(categories = parseCategoriesSpec(spec))
     }
 
     options.inputFile?.let { filePath ->
-        return loadCategoriesFromFile(filePath)
+        return LoadedLotteryData(categories = loadCategoriesFromFile(filePath))
     }
 
     val year = options.year
@@ -460,7 +508,10 @@ suspend fun loadCategories(options: CliOptions): List<Category> {
             }.trimEnd()
         )
     }
-    return categories
+    return LoadedLotteryData(
+        categories = categories,
+        lastUpdated = extractLastUpdated(doc),
+    )
 }
 
 /**
@@ -1011,6 +1062,149 @@ suspend fun runLotteryAndWaitlistSimulations(
         waitlistTop50 = waitlist50Probs,
         waitlistTop75 = waitlist75Probs,
     )
+}
+
+private val LAST_UPDATED_REGEX = Regex("""Last\s+Updated:\s*([^\r\n<]+)""", RegexOption.IGNORE_CASE)
+
+/**
+ * Extracts the `"Last Updated: ..."` timestamp string from a WSER lottery HTML [Document], if present.
+ *
+ * Searches raw HTML so the closing tag (`</H4>`) cleanly terminates the captured timestamp.
+ */
+fun extractLastUpdated(doc: Document): String? {
+    val match = LAST_UPDATED_REGEX.find(doc.html()) ?: return null
+    return match.groupValues[1].replace("&nbsp;", " ").trim().takeIf { it.isNotEmpty() }
+}
+
+private const val DAILY_HISTORY_HEADER = "## Daily Snapshot History"
+
+/**
+ * Writes a GitHub-flavored Markdown report of the lottery and waitlist probabilities to [outputPath].
+ *
+ * If [outputPath] already exists and contains a [DAILY_HISTORY_HEADER] table, previous daily snapshot
+ * rows are preserved and today's row (keyed by UTC date `YYYY-MM-DD`) is added or updated in-place.
+ */
+fun writeMarkdownReport(
+    outputPath: Path,
+    options: CliOptions,
+    loadedData: LoadedLotteryData,
+    simulatedOutcomes: LotteryOutcomeProbabilities,
+    formulaOutcomes: LotteryOutcomeProbabilities,
+    snapshotDateUtc: String = LocalDate.now(ZoneOffset.UTC).toString(),
+) {
+    val categories = loadedData.categories.sortedBy { it.tickets }
+    val totalEntrants = categories.sumOf { it.entrants }
+    val totalTickets = categories.sumOf { it.total }
+    val lastUpdatedLabel = loadedData.lastUpdated ?: "N/A"
+
+    // Preserve any existing history rows from prior days in the Markdown file
+    val existingHistoryRows = LinkedHashMap<String, String>()
+    if (outputPath.exists()) {
+        runCatching { outputPath.readText() }.getOrNull()?.let { prevContent ->
+            val historySection = prevContent.substringAfter(DAILY_HISTORY_HEADER, missingDelimiterValue = "")
+            historySection.lineSequence()
+                .map { it.trim() }
+                .filter { it.startsWith("| 20") }
+                .forEach { row ->
+                    val dateKey = row.removePrefix("|").substringBefore("|").trim()
+                    if (dateKey.isNotEmpty()) {
+                        existingHistoryRows[dateKey] = row
+                    }
+                }
+        }
+    }
+
+    fun pctForTier(tickets: Int): String =
+        formulaOutcomes.mainLottery[tickets]?.let { "${(it * 100.0).format(2)}%" } ?: "—"
+
+    val todayRow = "| %s | %s | %,d | %,d | %s | %s | %s | %s | %s | %s | %s |".format(
+        snapshotDateUtc,
+        lastUpdatedLabel,
+        totalEntrants,
+        totalTickets,
+        pctForTier(1),
+        pctForTier(16),
+        pctForTier(64),
+        pctForTier(128),
+        pctForTier(256),
+        pctForTier(512),
+        pctForTier(1024),
+    )
+    existingHistoryRows[snapshotDateUtc] = todayRow
+
+    val markdown = buildString {
+        appendLine("# ${options.sourceLabel} — Lottery & Waitlist Probabilities")
+        appendLine()
+        appendLine("- **Snapshot Date (UTC)**: `$snapshotDateUtc`")
+        appendLine("- **WSER Page Last Updated**: `$lastUpdatedLabel`")
+        appendLine("- **Total Entrants**: **%,d**".format(totalEntrants))
+        appendLine("- **Total Tickets in Hat**: **%,d**".format(totalTickets))
+        appendLine("- **Main Lottery Spots**: **$DEFAULT_LOTTERY_SPOTS**")
+        appendLine("- **Monte Carlo Trials**: **%,d**".format(options.numSimulations))
+        appendLine()
+        appendLine("---")
+        appendLine()
+        appendLine("## 1. Main Lottery & Cumulative Waitlist Probabilities")
+        appendLine()
+        appendLine("| Tickets | Entrants | Total Tickets | Expected Winners | Main Lottery (MC / Formula) | WL First 10 (`1–10`) | WL Up to 25th (`1–25`) | WL Up to 50th (`1–50`) | WL Up to 75th (`1–75`) |")
+        appendLine("| ---: | ---: | ---: | ---: | :---: | ---: | ---: | ---: | ---: |")
+        for (category in categories) {
+            val t = category.tickets
+            val mainMc = (simulatedOutcomes.mainLottery.getValue(t) * 100.0).format(3)
+            val mainFm = (formulaOutcomes.mainLottery.getValue(t) * 100.0).format(3)
+            val expectedWinners = (category.entrants * formulaOutcomes.mainLottery.getValue(t)).format(1)
+            val wl10 = (simulatedOutcomes.waitlistTop10.getValue(t) * 100.0).format(3)
+            val wl25 = (simulatedOutcomes.waitlistTop25.getValue(t) * 100.0).format(3)
+            val wl50 = (simulatedOutcomes.waitlistTop50.getValue(t) * 100.0).format(3)
+            val wl75 = (simulatedOutcomes.waitlistTop75.getValue(t) * 100.0).format(3)
+            appendLine(
+                "| **%,d** | %,d | %,d | %s | **%s%%** / %s%% | %s%% | %s%% | %s%% | %s%% |".format(
+                    t,
+                    category.entrants,
+                    category.total,
+                    expectedWinners,
+                    mainMc,
+                    mainFm,
+                    wl10,
+                    wl25,
+                    wl50,
+                    wl75,
+                )
+            )
+        }
+        appendLine()
+        appendLine("---")
+        appendLine()
+        appendLine("## 2. 10-Runner Waitlist Buckets (Monte Carlo)")
+        appendLine()
+        val buckets = simulatedOutcomes.waitlistByBucket.keys.toList()
+        val bucketHeaderCols = buckets.joinToString(" | ") { "WL `${it.label}`" }
+        val bucketAlignCols = buckets.joinToString(" | ") { "---:" }
+        appendLine("| Tickets | Entrants | $bucketHeaderCols |")
+        appendLine("| ---: | ---: | $bucketAlignCols |")
+        for (category in categories) {
+            val t = category.tickets
+            val rowCols = buckets.joinToString(" | ") { bucket ->
+                "${(simulatedOutcomes.waitlistByBucket.getValue(bucket).getValue(t) * 100.0).format(3)}%"
+            }
+            appendLine("| **%,d** | %,d | %s |".format(t, category.entrants, rowCols))
+        }
+        appendLine()
+        appendLine("---")
+        appendLine()
+        appendLine(DAILY_HISTORY_HEADER)
+        appendLine()
+        appendLine("Tracks daily changes in entrant counts and main lottery selection probabilities leading up to registration closing:")
+        appendLine()
+        appendLine("| Date (UTC) | WSER Last Updated | Entrants | Total Tickets | 1 Tkt | 16 Tkt | 64 Tkt | 128 Tkt | 256 Tkt | 512 Tkt | 1024 Tkt |")
+        appendLine("| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+        for (row in existingHistoryRows.values) {
+            appendLine(row)
+        }
+    }
+
+    outputPath.parent?.toFile()?.mkdirs()
+    outputPath.writeText(markdown)
 }
 
 /**

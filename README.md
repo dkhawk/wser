@@ -4,6 +4,8 @@
 
 A high-performance Kotlin calculator that computes **exact** and **simulated** selection probabilities for the [Western States Endurance Run (WSER)](https://www.wser.org/) 100-mile lottery and waitlist.
 
+> **Live 2027 Lottery Tracker**: View the latest daily-updated probabilities and registration trend history in [**`RESULTS_2027.md`**](RESULTS_2027.md).
+
 ---
 
 ## How the WSER Lottery & Waitlist Work

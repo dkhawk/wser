@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
 import kotlin.io.path.createTempFile
 import kotlin.io.path.deleteIfExists
+import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.math.abs
 import kotlin.test.Test
@@ -348,6 +349,50 @@ class LotterySolverTest {
             assertTrue(error.message!!.contains("404 Not Found"))
         } finally {
             tempHtml.deleteIfExists()
+        }
+    }
+
+    @Test
+    fun `writeMarkdownReport generates tables and preserves daily snapshot history across runs`() {
+        val doc = Jsoup.parse("<html><body><h4>Last Updated: 11-09-2026 08:15:00 AM</h4></body></html>")
+        assertEquals("11-09-2026 08:15:00 AM", extractLastUpdated(doc))
+
+        val options = parseCliArgs(arrayOf("2027", "--markdown-out", "RESULTS_2027.md"))
+        assertEquals("RESULTS_2027.md", options.markdownOut?.toString())
+
+        val outcomes = calculateExactLotteryAndWaitlistProbabilities(
+            categories = wser2027Categories,
+            spots = DEFAULT_LOTTERY_SPOTS,
+            waitlistBuckets = DEFAULT_WAITLIST_BUCKETS,
+        )
+
+        val tempMd = createTempFile(prefix = "wser-report-", suffix = ".md")
+        try {
+            writeMarkdownReport(
+                outputPath = tempMd,
+                options = options,
+                loadedData = LoadedLotteryData(wser2027Categories, "11-08-2026 09:00:00 AM"),
+                simulatedOutcomes = outcomes,
+                formulaOutcomes = outcomes,
+                snapshotDateUtc = "2026-11-08",
+            )
+            writeMarkdownReport(
+                outputPath = tempMd,
+                options = options,
+                loadedData = LoadedLotteryData(wser2027Categories, "11-09-2026 09:00:00 AM"),
+                simulatedOutcomes = outcomes,
+                formulaOutcomes = outcomes,
+                snapshotDateUtc = "2026-11-09",
+            )
+
+            val content = tempMd.readText()
+            assertTrue(content.contains("## 1. Main Lottery & Cumulative Waitlist Probabilities"))
+            assertTrue(content.contains("## 2. 10-Runner Waitlist Buckets (Monte Carlo)"))
+            assertTrue(content.contains("## Daily Snapshot History"))
+            assertTrue(content.contains("| 2026-11-08 | 11-08-2026 09:00:00 AM |"))
+            assertTrue(content.contains("| 2026-11-09 | 11-09-2026 09:00:00 AM |"))
+        } finally {
+            tempMd.deleteIfExists()
         }
     }
 }

@@ -1,0 +1,54 @@
+name: Daily 2027 WSER Lottery Update
+
+on:
+  schedule:
+    # Runs once a day at 16:00 UTC (8:00 AM PST) on November 1 through November 18
+    - cron: '0 16 1-18 11 *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-lottery-results:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check cutoff date (November 18, 2026)
+        id: date_check
+        run: |
+          TODAY=$(date -u +%Y%m%d)
+          if [ "$TODAY" -gt "20261118" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Current UTC date ($TODAY) is past the November 18, 2026 cutoff; skipping."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        if: steps.date_check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        if: steps.date_check.outputs.skip != 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: 'gradle'
+
+      - name: Run 2027 WSER Lottery Simulation & Generate RESULTS_2027.md
+        if: steps.date_check.outputs.skip != 'true'
+        run: ./gradlew run -q --args="2027 --force-download --markdown-out RESULTS_2027.md"
+
+      - name: Commit and push RESULTS_2027.md if updated
+        if: steps.date_check.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add RESULTS_2027.md
+          if git diff --staged --quiet; then
+            echo "No changes to RESULTS_2027.md"
+          else
+            git commit -m "Update 2027 WSER lottery probabilities ($(date -u +'%Y-%m-%d')) [skip ci]"
+            git push
+          fi
